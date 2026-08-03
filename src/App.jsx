@@ -17,6 +17,7 @@ const DEFAULTS = {
   // Duty cycle
   analysisPeriod: 10,
   annualMileage: 120000,
+  loadedDistancePct: 50, // % of distance driven with cargo (e.g. 50% means empty return half the time)
   discountRate: 9,
   costEscalation: 5,
 
@@ -304,13 +305,18 @@ function compute(inp) {
   const payloadDieselT = payloadDiesel / 1000;
   const payloadBEVT = payloadBEV / 1000;
 
+  // Payload Parity Scaling Ratios for Fleet Parity views
   const payloadRatio = payloadDieselT / payloadBEVT;
   const fleetSizeBEVEquated = inp.fleetSize * payloadRatio;
   const fleetStationsBEVEquated = inp.fleetStations * payloadRatio;
   const fleetChargersBEVEquated = inp.fleetChargers * payloadRatio;
 
-  const costPerTonneKmDiesel = npvDiesel / (payloadDieselT * inp.annualMileage * n);
-  const costPerTonneKmBEV = npvBEV / (payloadBEVT * inp.annualMileage * n);
+  // Calculate unit economics based on loaded km, isolating empty runs
+  const loadedFraction = inp.loadedDistancePct / 100;
+  const loadedDistanceLife = inp.annualMileage * loadedFraction * n;
+
+  const costPerTonneKmDiesel = npvDiesel / (payloadDieselT * loadedDistanceLife);
+  const costPerTonneKmBEV = npvBEV / (payloadBEVT * loadedDistanceLife);
 
   // Set residual values as negative categories in breakdown to match cards perfectly
   dieselBreak["Residual value"] = -discountedResidualD;
@@ -590,6 +596,7 @@ export default function TCOCalculator() {
           <Section icon={<Truck size={16} color="var(--dim)" />} title="Duty cycle">
             <Field label="Analysis period" value={inp.analysisPeriod} onChange={set("analysisPeriod")} suffix="years" step={1} />
             <Field label="Annual distance" value={inp.annualMileage} onChange={set("annualMileage")} suffix="km" step={1000} />
+            <Field label="Loaded distance ratio" value={inp.loadedDistancePct} onChange={set("loadedDistancePct")} suffix="%" step={5} />
             <Field label="Discount rate" value={inp.discountRate} onChange={set("discountRate")} suffix="%" step={0.5} />
             <Field label="General cost escalation" value={inp.costEscalation} onChange={set("costEscalation")} suffix="%/yr" step={0.5} />
           </Section>
@@ -879,26 +886,26 @@ export default function TCOCalculator() {
           </div>
 
           <div className="panel">
-            <h2><Package size={18} />Cost per tonne-km</h2>
+            <h2><Package size={18} />Cost per loaded tonne-km</h2>
             <p style={{ fontSize: 12.5, color: "var(--dim)", margin: "-4px 0 14px", lineHeight: 1.5 }}>
-              What it costs to move one tonne of freight one kilometre, for each truck — its total cost of
-              ownership divided by the total tonne-km it can actually carry over the analysis period. This uses
-              each truck's own payload, so the electric tractor's heavier curb weight (which eats into payload
-              within the same 55T GVW) is priced in, not just its purchase and running costs.
+              What it costs to move one tonne of freight one loaded kilometre, for each truck — its total cost of
+              ownership (TCO) divided by the actual cargo tonne-km it delivers. Because the truck runs empty for the 
+              remaining percentage of the trip (generating 0 cargo-carrying value while still accumulating operational 
+              and capital TCO), the loaded leg has to recover all expenses.
             </p>
             <div className="insight-grid">
               <div className="insight">
-                <div className="title">Cost per tonne-km — diesel</div>
+                <div className="title">Cost per loaded tonne-km — diesel</div>
                 <div className="big num" style={{ color: "var(--diesel)" }}>₹{results.costPerTonneKmDiesel.toFixed(2)}/t-km</div>
                 <div className="sub" style={{ fontSize: 11, color: "var(--dim)", marginTop: 4 }}>
-                  {Math.round(results.payloadDieselT)}t payload
+                  {Math.round(results.payloadDieselT)}t payload · {inp.loadedDistancePct}% loaded distance
                 </div>
               </div>
               <div className="insight">
-                <div className="title">Cost per tonne-km — electric</div>
+                <div className="title">Cost per loaded tonne-km — electric</div>
                 <div className="big num" style={{ color: "var(--bev)" }}>₹{results.costPerTonneKmBEV.toFixed(2)}/t-km</div>
                 <div className="sub" style={{ fontSize: 11, color: "var(--dim)", marginTop: 4 }}>
-                  {Math.round(results.payloadBEVT)}t payload
+                  {Math.round(results.payloadBEVT)}t payload · {inp.loadedDistancePct}% loaded distance
                 </div>
               </div>
               <div className="insight" style={{ gridColumn: "1 / -1" }}>
