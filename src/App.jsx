@@ -29,6 +29,10 @@ const DEFAULTS = {
   dieselMaintCostPerKm: 1.5,
   dieselInsuranceRate: 3,
   dieselResidualValue: 10,
+  dieselFinancing: "cash", // "cash" | "emi"
+  dieselDownPaymentPct: 20,
+  dieselLoanInterestRate: 11,
+  dieselLoanTenure: 5,
 
   // Electric tractor-trailer
   bevPurchasePrice: 10000000,
@@ -41,6 +45,10 @@ const DEFAULTS = {
   bevMaintCostPerKm: .5,
   bevInsurancePremiumDiff: 20,
   bevResidualValue: 5,
+  bevFinancing: "cash", // "cash" | "emi"
+  bevDownPaymentPct: 20,
+  bevLoanInterestRate: 10,
+  bevLoanTenure: 6,
 
   // Charging & energy
   chargingType: "private",
@@ -88,6 +96,29 @@ function compute(inp) {
   const dieselPriceIncGST = inp.dieselPurchasePrice * (1 + inp.gstDiesel / 100);
   const bevPriceIncGST = inp.bevPurchasePrice * (1 + inp.gstBEV / 100);
   const bevPriceAfterIncentive = bevPriceIncGST * (1 - inp.stateIncentiveBEV / 100);
+
+  // EMI financing: independent per vehicle type. If "emi", the operator pays a
+  // down payment upfront and an amortized annual payment (principal + interest)
+  // for the loan tenure — total cash paid ends up higher than the sticker price
+  // by the interest cost. If "cash", the full price is paid upfront as before.
+  function loanTerms(price, financing, downPct, annualRatePct, tenureYears) {
+    if (financing !== "emi" || tenureYears <= 0) {
+      return { upfront: price, annualPayment: 0, tenureYears: 0, principal: 0, interestTotal: 0 };
+    }
+    const downPayment = price * (downPct / 100);
+    const principal = Math.max(0, price - downPayment);
+    const monthlyRate = annualRatePct / 1200;
+    const nMonths = tenureYears * 12;
+    const monthlyEMI = monthlyRate > 0
+      ? (principal * monthlyRate * Math.pow(1 + monthlyRate, nMonths)) / (Math.pow(1 + monthlyRate, nMonths) - 1)
+      : principal / nMonths;
+    const annualPayment = monthlyEMI * 12;
+    const interestTotal = Math.max(0, annualPayment * tenureYears - principal);
+    return { upfront: downPayment, annualPayment, tenureYears, principal, interestTotal };
+  }
+
+  const dieselLoan = loanTerms(dieselPriceIncGST, inp.dieselFinancing, inp.dieselDownPaymentPct, inp.dieselLoanInterestRate, inp.dieselLoanTenure);
+  const bevLoan = loanTerms(bevPriceAfterIncentive, inp.bevFinancing, inp.bevDownPaymentPct, inp.bevLoanInterestRate, inp.bevLoanTenure);
   
   // Amortize stations and chargers pro-rata per vehicle for single-vehicle views
   const chargerRatio = inp.fleetChargers / Math.max(1, inp.fleetSize);
@@ -110,14 +141,14 @@ function compute(inp) {
   let yearsSinceReplacement = 0;
   const replacementEvents = [];
 
-  let dieselCum = [dieselPriceIncGST];
-  let bevCum = [bevPriceAfterIncentive + chargerCostAfterCredit];
+  let dieselCum = [dieselLoan.upfront];
+  let bevCum = [bevLoan.upfront + chargerCostAfterCredit];
 
-  const dieselBreak = { Acquisition: dieselPriceIncGST, Fuel: 0, Maintenance: 0, Insurance: 0 };
-  const bevBreak = { Acquisition: bevPriceAfterIncentive, Infrastructure: chargerCostAfterCredit, Energy: 0, Maintenance: 0, Insurance: 0, "Charging downtime": 0, "Battery replacement": 0 };
+  const dieselBreak = { Acquisition: dieselLoan.upfront, "Loan principal": dieselLoan.principal, "Financing interest": dieselLoan.interestTotal, Fuel: 0, Maintenance: 0, Insurance: 0 };
+  const bevBreak = { Acquisition: bevLoan.upfront, "Loan principal": bevLoan.principal, "Financing interest": bevLoan.interestTotal, Infrastructure: chargerCostAfterCredit, Energy: 0, Maintenance: 0, Insurance: 0, "Charging downtime": 0, "Battery replacement": 0 };
 
-  let npvDiesel = dieselPriceIncGST;
-  let npvBEV = bevPriceAfterIncentive + chargerCostAfterCredit;
+  let npvDiesel = dieselLoan.upfront;
+  let npvBEV = bevLoan.upfront + chargerCostAfterCredit;
 
   const rows = [];
 
@@ -127,7 +158,8 @@ function compute(inp) {
     const fuelCost = (inp.annualMileage / Math.max(0.01, inp.fuelEconomy)) * inp.dieselPrice * Math.pow(1 + escD, t - 1);
     const maintCostD = inp.annualMileage * inp.dieselMaintCostPerKm * Math.pow(1 + escC, t - 1);
     const insCostD = dieselPriceIncGST * (inp.dieselInsuranceRate / 100) * Math.pow(1 + escC, t - 1);
-    const yearCostD = fuelCost + maintCostD + insCostD;
+    const dieselEMIThisYear = (inp.dieselFinancing === "emi" && t <= dieselLoan.tenureYears) ? dieselLoan.annualPayment : 0;
+    const yearCostD = fuelCost + maintCostD + insCostD + dieselEMIThisYear;
     dieselBreak.Fuel += fuelCost;
     dieselBreak.Maintenance += maintCostD;
     dieselBreak.Insurance += insCostD;
@@ -148,6 +180,7 @@ function compute(inp) {
     const totalInfraMaintPerVehicle = stationMaintPerVehicle + chargerMaintPerVehicle;
 
     const downtimeCost = cyclesThisYear * inp.chargingTimePerCycle * inp.driverLaborCost;
+    const bevEMIThisYear = (inp.bevFinancing === "emi" && t <= bevLoan.tenureYears) ? bevLoan.annualPayment : 0;
 
     cyclesSinceReplacement += cyclesThisYear;
     distanceSinceReplacement += inp.annualMileage;
@@ -169,7 +202,7 @@ function compute(inp) {
       sohStart = sohNow;
     }
 
-    const yearCostB = energyCost + maintCostB + insCostB + totalInfraMaintPerVehicle + downtimeCost + batteryCost;
+    const yearCostB = energyCost + maintCostB + insCostB + totalInfraMaintPerVehicle + downtimeCost + batteryCost + bevEMIThisYear;
     bevBreak.Energy += energyCost;
     bevBreak.Maintenance += maintCostB;
     bevBreak.Insurance += insCostB;
@@ -217,6 +250,8 @@ function compute(inp) {
 
   const breakdownData = [
     { category: "Acquisition", Diesel: dieselBreak.Acquisition, Electric: bevBreak.Acquisition },
+    { category: "Loan principal", Diesel: dieselBreak["Loan principal"], Electric: bevBreak["Loan principal"] },
+    { category: "Financing interest", Diesel: dieselBreak["Financing interest"], Electric: bevBreak["Financing interest"] },
     { category: "Fuel / Energy", Diesel: dieselBreak.Fuel, Electric: bevBreak.Energy },
     { category: "Maintenance", Diesel: dieselBreak.Maintenance, Electric: bevBreak.Maintenance },
     { category: "Insurance", Diesel: dieselBreak.Insurance, Electric: bevBreak.Insurance },
@@ -232,6 +267,7 @@ function compute(inp) {
     payloadDiesel, payloadBEV, payloadDieselT, payloadBEVT, rangePerCharge, cyclesPerYear,
     costPerTonneKmDiesel, costPerTonneKmBEV, payloadRatio, fleetSizeBEVEquated, fleetStationsBEVEquated, fleetChargersBEVEquated,
     effectiveBatteryLifeYears, sohAtEnd, cyclesToFirstReplacement, replacementEvents,
+    dieselLoan, bevLoan,
   };
 }
 
@@ -498,6 +534,20 @@ export default function TCOCalculator() {
             <Field label="Maintenance cost" value={inp.dieselMaintCostPerKm} onChange={set("dieselMaintCostPerKm")} suffix="₹/km" step={0.5} />
             <Field label="Insurance rate" value={inp.dieselInsuranceRate} onChange={set("dieselInsuranceRate")} suffix="%/yr of price" step={0.25} />
             <Field label="Residual value" value={inp.dieselResidualValue} onChange={set("dieselResidualValue")} suffix="% at end" step={1} />
+            <div className="field">
+              <span className="field-label">Financing</span>
+              <div className="seg" style={{ width: 150 }}>
+                <button className={inp.dieselFinancing === "cash" ? "active" : ""} onClick={() => set("dieselFinancing")("cash")}>Cash</button>
+                <button className={inp.dieselFinancing === "emi" ? "active" : ""} onClick={() => set("dieselFinancing")("emi")}>EMI</button>
+              </div>
+            </div>
+            {inp.dieselFinancing === "emi" && (
+              <>
+                <Field label="Down payment" value={inp.dieselDownPaymentPct} onChange={set("dieselDownPaymentPct")} suffix="%" step={5} />
+                <Field label="Loan interest rate" value={inp.dieselLoanInterestRate} onChange={set("dieselLoanInterestRate")} suffix="%/yr" step={0.25} />
+                <Field label="Loan tenure" value={inp.dieselLoanTenure} onChange={set("dieselLoanTenure")} suffix="years" step={1} />
+              </>
+            )}
           </Section>
 
           <Section icon={<BatteryCharging size={16} color="var(--bev)" />} title="Electric truck">
@@ -511,6 +561,20 @@ export default function TCOCalculator() {
             <Field label="Maintenance cost" value={inp.bevMaintCostPerKm} onChange={set("bevMaintCostPerKm")} suffix="₹/km" step={0.5} />
             <Field label="Insurance premium vs diesel" value={inp.bevInsurancePremiumDiff} onChange={set("bevInsurancePremiumDiff")} suffix="% higher" step={1} />
             <Field label="Residual value" value={inp.bevResidualValue} onChange={set("bevResidualValue")} suffix="% at end" step={1} />
+            <div className="field">
+              <span className="field-label">Financing</span>
+              <div className="seg" style={{ width: 150 }}>
+                <button className={inp.bevFinancing === "cash" ? "active" : ""} onClick={() => set("bevFinancing")("cash")}>Cash</button>
+                <button className={inp.bevFinancing === "emi" ? "active" : ""} onClick={() => set("bevFinancing")("emi")}>EMI</button>
+              </div>
+            </div>
+            {inp.bevFinancing === "emi" && (
+              <>
+                <Field label="Down payment" value={inp.bevDownPaymentPct} onChange={set("bevDownPaymentPct")} suffix="%" step={5} />
+                <Field label="Loan interest rate" value={inp.bevLoanInterestRate} onChange={set("bevLoanInterestRate")} suffix="%/yr" step={0.25} />
+                <Field label="Loan tenure" value={inp.bevLoanTenure} onChange={set("bevLoanTenure")} suffix="years" step={1} />
+              </>
+            )}
           </Section>
 
           <Section icon={<PlugZap size={16} color="var(--bev)" />} title="Charging & energy">
@@ -655,6 +719,51 @@ export default function TCOCalculator() {
           </div>
 
           <div className="panel">
+            <h2><ShieldCheck size={18} />Financing (EMI)</h2>
+            <p style={{ fontSize: 12.5, color: "var(--dim)", margin: "-4px 0 14px", lineHeight: 1.5 }}>
+              Set independently per vehicle type. Choosing EMI trades a lower upfront outlay for a higher total cost —
+              the interest paid over the loan tenure — which now flows straight into the TCO above rather than sitting
+              off to the side.
+            </p>
+            <div className="insight-grid">
+              <div className="insight">
+                <div className="title">Diesel — {inp.dieselFinancing === "emi" ? "financed" : "cash purchase"}</div>
+                {inp.dieselFinancing === "emi" ? (
+                  <>
+                    <div className="big num" style={{ color: "var(--diesel)" }}>{inr(results.dieselLoan.annualPayment / 12)}/mo</div>
+                    <div className="sub" style={{ fontSize: 11, color: "var(--dim)", marginTop: 4 }}>
+                      {inr(results.dieselLoan.upfront)} down · {inp.dieselLoanTenure}yr tenure @ {inp.dieselLoanInterestRate}% ·
+                      total interest {inrCompact(results.dieselLoan.interestTotal)}
+                    </div>
+                  </>
+                ) : (
+                  <div className="big num" style={{ color: "var(--diesel)" }}>{inrCompact(results.dieselLoan.upfront)}</div>
+                )}
+              </div>
+              <div className="insight">
+                <div className="title">Electric — {inp.bevFinancing === "emi" ? "financed" : "cash purchase"}</div>
+                {inp.bevFinancing === "emi" ? (
+                  <>
+                    <div className="big num" style={{ color: "var(--bev)" }}>{inr(results.bevLoan.annualPayment / 12)}/mo</div>
+                    <div className="sub" style={{ fontSize: 11, color: "var(--dim)", marginTop: 4 }}>
+                      {inr(results.bevLoan.upfront)} down · {inp.bevLoanTenure}yr tenure @ {inp.bevLoanInterestRate}% ·
+                      total interest {inrCompact(results.bevLoan.interestTotal)}
+                    </div>
+                  </>
+                ) : (
+                  <div className="big num" style={{ color: "var(--bev)" }}>{inrCompact(results.bevLoan.upfront)}</div>
+                )}
+              </div>
+            </div>
+            {(inp.dieselFinancing === "emi" || inp.bevFinancing === "emi") && (
+              <p style={{ fontSize: 11.5, color: "var(--dim)", marginTop: 12, marginBottom: 0, lineHeight: 1.5 }}>
+                If loan tenure exceeds the analysis period, only the payments made within that window are counted — any
+                remaining loan balance still owed beyond the analysis period isn't added as a year-{results.n} liability.
+              </p>
+            )}
+          </div>
+
+          <div className="panel">
             <h2><Info size={18} />Operating detail (Per Vehicle)</h2>
             <div className="insight-grid">
               <div className="insight">
@@ -763,5 +872,5 @@ export default function TCOCalculator() {
         </div>
       </div>
     </div>
-  );
+  )
 }
