@@ -27,13 +27,13 @@ const DEFAULTS = {
   fuelEconomy: 4.,
   dieselPrice: 96,
   dieselPriceEscalation: 5,
-  dieselMaintCostPerKm: 4,
+  dieselMaintCostPerKm: 3,
   dieselInsuranceRate: 3,
   dieselResidualValue: 10,
-  dieselFinancing: "cash", // "cash" | "emi"
-  dieselDownPaymentPct: 20,
-  dieselLoanInterestRate: 11,
-  dieselLoanTenure: 5,
+  dieselFinancing: "emi", // "cash" | "emi"
+  dieselDownPaymentPct: 10,
+  dieselLoanInterestRate: 10,
+  dieselLoanTenure: 10,
 
   // Electric tractor-trailer
   bevPurchasePrice: 10000000,
@@ -43,13 +43,13 @@ const DEFAULTS = {
   batteryReplacementCost: 4000000,
   batteryDegradationPerCycle: 0.005,
   batterySOHThreshold: 80,
-  bevMaintCostPerKm: 4,
+  bevMaintCostPerKm: 3,
   bevInsurancePremiumDiff: 20,
   bevResidualValue: 5,
-  bevFinancing: "cash", // "cash" | "emi"
-  bevDownPaymentPct: 20,
+  bevFinancing: "emi", // "cash" | "emi"
+  bevDownPaymentPct: 10,
   bevLoanInterestRate: 10,
-  bevLoanTenure: 6,
+  bevLoanTenure: 10,
 
   // Charging & energy
   chargingType: "private",
@@ -589,7 +589,7 @@ export default function TCOCalculator() {
             <Field label="Total Fleet Stations" value={inp.fleetStations} onChange={set("fleetStations")} suffix="stations" step={1} />
             <Field label="Total Fleet Chargers" value={inp.fleetChargers} onChange={set("fleetChargers")} suffix="chargers" step={1} />
             <div className="foot-note" style={{ marginTop: 4 }}>
-              Depot Ratio: {(inp.fleetSize / Math.max(1, inp.fleetStations)).toFixed(1)} trucks/station · {(inp.fleetChargers / Math.max(1, inp.fleetStations)).toFixed(1)} chargers/station · {(inp.fleetChargers / Math.max(1, inp.fleetSize) * 100).toFixed(1)}% charger-to-truck ratio [1].
+              Depot Ratio: {(inp.fleetSize / Math.max(1, inp.fleetStations)).toFixed(1)} trucks/station · {(inp.fleetChargers / Math.max(1, inp.fleetStations)).toFixed(1)} chargers/station · {(inp.fleetChargers / Math.max(1, inp.fleetSize) * 100).toFixed(1)}% charger-to-truck ratio.
             </div>
           </Section>
 
@@ -742,7 +742,7 @@ export default function TCOCalculator() {
             <div className="insight" style={{ border: "1px solid var(--diesel)", background: "rgba(232, 163, 61, 0.05)", borderRadius: "10px" }}>
               <div className="title" style={{ color: "var(--diesel)", fontWeight: "600", fontSize: "13px" }}>Payload-Parity Correction Active</div>
               <p style={{ margin: "6px 0 0", fontSize: "12.5px", color: "var(--text)", lineHeight: "1.5" }}>
-                Because a single electric tractor-trailer carries less cargo than a diesel truck due to heavy batteries (<strong>{results.payloadBEVT.toFixed(1)}t</strong> vs <strong>{results.payloadDieselT.toFixed(1)}t</strong>), an electric fleet requires more vehicles to move the same total annual tonnage over the same routes. This mode scales your electric fleet up to <strong>{results.fleetSizeBEVEquated.toFixed(1)} vehicles</strong>, and automatically scales up the required depot infrastructure to <strong>{results.fleetStationsBEVEquated.toFixed(1)} stations</strong> and <strong>{results.fleetChargersBEVEquated.toFixed(1)} chargers</strong> to maintain your exact charger and depot densities [1].
+                Because a single electric tractor-trailer carries less cargo than a diesel truck due to heavy batteries (<strong>{results.payloadBEVT.toFixed(1)}t</strong> vs <strong>{results.payloadDieselT.toFixed(1)}t</strong>), an electric fleet requires more vehicles to move the same total annual tonnage over the same routes. This mode scales your electric fleet up to <strong>{results.fleetSizeBEVEquated.toFixed(1)} vehicles</strong>, and automatically scales up the required depot infrastructure to <strong>{results.fleetStationsBEVEquated.toFixed(1)} stations</strong> and <strong>{results.fleetChargersBEVEquated.toFixed(1)} chargers</strong> to maintain your exact charger and depot densities .
               </p>
             </div>
           )}
