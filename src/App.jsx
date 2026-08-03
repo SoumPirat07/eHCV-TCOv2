@@ -97,10 +97,7 @@ function compute(inp) {
   const bevPriceIncGST = inp.bevPurchasePrice * (1 + inp.gstBEV / 100);
   const bevPriceAfterIncentive = bevPriceIncGST * (1 - inp.stateIncentiveBEV / 100);
 
-  // EMI financing: independent per vehicle type. If "emi", the operator pays a
-  // down payment upfront and an amortized annual payment (principal + interest)
-  // for the loan tenure — total cash paid ends up higher than the sticker price
-  // by the interest cost. If "cash", the full price is paid upfront as before.
+  // EMI loan terms setup
   function loanTerms(price, financing, downPct, annualRatePct, tenureYears) {
     if (financing !== "emi" || tenureYears <= 0) {
       return { upfront: price, annualPayment: 0, tenureYears: 0, principal: 0, interestTotal: 0 };
@@ -144,27 +141,86 @@ function compute(inp) {
   let dieselCum = [dieselLoan.upfront];
   let bevCum = [bevLoan.upfront + chargerCostAfterCredit];
 
-  const dieselBreak = { Acquisition: dieselLoan.upfront, "Loan principal": dieselLoan.principal, "Financing interest": dieselLoan.interestTotal, Fuel: 0, Maintenance: 0, Insurance: 0 };
-  const bevBreak = { Acquisition: bevLoan.upfront, "Loan principal": bevLoan.principal, "Financing interest": bevLoan.interestTotal, Infrastructure: chargerCostAfterCredit, Energy: 0, Maintenance: 0, Insurance: 0, "Charging downtime": 0, "Battery replacement": 0 };
+  // Track discounted (NPV) breakdown categories
+  const dieselBreak = { 
+    Acquisition: dieselLoan.upfront, 
+    "Loan principal": 0, 
+    "Financing interest": 0, 
+    Fuel: 0, 
+    Maintenance: 0, 
+    Insurance: 0,
+    "Residual value": 0
+  };
+  const bevBreak = { 
+    Acquisition: bevLoan.upfront, 
+    "Loan principal": 0, 
+    "Financing interest": 0, 
+    Infrastructure: chargerCostAfterCredit, 
+    Energy: 0, 
+    Maintenance: 0, 
+    Insurance: 0, 
+    "Charging downtime": 0, 
+    "Battery replacement": 0,
+    "Residual value": 0
+  };
 
   let npvDiesel = dieselLoan.upfront;
   let npvBEV = bevLoan.upfront + chargerCostAfterCredit;
+
+  // Running loan balance tracking for step-by-step amortization
+  let balanceD = dieselLoan.principal;
+  let balanceB = bevLoan.principal;
 
   const rows = [];
 
   for (let t = 1; t <= n; t++) {
     const df = 1 / Math.pow(1 + disc, t);
 
+    // Precise year-by-year amortization calculation for Diesel loan
+    let interestPaidD = 0;
+    let principalPaidD = 0;
+    if (inp.dieselFinancing === "emi" && t <= dieselLoan.tenureYears) {
+      const monthlyRate = inp.dieselLoanInterestRate / 1200;
+      for (let m = 0; m < 12; m++) {
+        const mInterest = balanceD * monthlyRate;
+        const mEMI = dieselLoan.annualPayment / 12;
+        const mPrincipal = Math.min(balanceD, mEMI - mInterest);
+        interestPaidD += mInterest;
+        principalPaidD += mPrincipal;
+        balanceD = Math.max(0, balanceD - mPrincipal);
+      }
+    }
+
     const fuelCost = (inp.annualMileage / Math.max(0.01, inp.fuelEconomy)) * inp.dieselPrice * Math.pow(1 + escD, t - 1);
     const maintCostD = inp.annualMileage * inp.dieselMaintCostPerKm * Math.pow(1 + escC, t - 1);
     const insCostD = dieselPriceIncGST * (inp.dieselInsuranceRate / 100) * Math.pow(1 + escC, t - 1);
-    const dieselEMIThisYear = (inp.dieselFinancing === "emi" && t <= dieselLoan.tenureYears) ? dieselLoan.annualPayment : 0;
+    const dieselEMIThisYear = interestPaidD + principalPaidD;
     const yearCostD = fuelCost + maintCostD + insCostD + dieselEMIThisYear;
-    dieselBreak.Fuel += fuelCost;
-    dieselBreak.Maintenance += maintCostD;
-    dieselBreak.Insurance += insCostD;
+
+    // Accumulate discounted NPV categories for Diesel
+    dieselBreak.Fuel += fuelCost * df;
+    dieselBreak.Maintenance += maintCostD * df;
+    dieselBreak.Insurance += insCostD * df;
+    dieselBreak["Loan principal"] += principalPaidD * df;
+    dieselBreak["Financing interest"] += interestPaidD * df;
+
     npvDiesel += yearCostD * df;
     dieselCum.push(dieselCum[dieselCum.length - 1] + yearCostD);
+
+    // Precise year-by-year amortization calculation for Electric loan
+    let interestPaidB = 0;
+    let principalPaidB = 0;
+    if (inp.bevFinancing === "emi" && t <= bevLoan.tenureYears) {
+      const monthlyRate = inp.bevLoanInterestRate / 1200;
+      for (let m = 0; m < 12; m++) {
+        const mInterest = balanceB * monthlyRate;
+        const mEMI = bevLoan.annualPayment / 12;
+        const mPrincipal = Math.min(balanceB, mEMI - mInterest);
+        interestPaidB += mInterest;
+        principalPaidB += mPrincipal;
+        balanceB = Math.max(0, balanceB - mPrincipal);
+      }
+    }
 
     const usableCapacityThisYear = usableCapacityNominal * (sohStart / 100);
     const rangeThisYear = Math.max(1, usableCapacityThisYear / Math.max(0.01, inp.electricEfficiency));
@@ -174,13 +230,12 @@ function compute(inp) {
     const maintCostB = inp.annualMileage * inp.bevMaintCostPerKm * Math.pow(1 + escC, t - 1);
     const insCostB = bevPriceAfterIncentive * (inp.dieselInsuranceRate / 100) * (1 + inp.bevInsurancePremiumDiff / 100) * Math.pow(1 + escC, t - 1);
     
-    // Separate and escalate depot & charger maintenance costs per vehicle
     const stationMaintPerVehicle = inp.stationMaintenance * stationRatio * Math.pow(1 + escC, t - 1);
     const chargerMaintPerVehicle = inp.chargerMaintenance * chargerRatio * Math.pow(1 + escC, t - 1);
     const totalInfraMaintPerVehicle = stationMaintPerVehicle + chargerMaintPerVehicle;
 
     const downtimeCost = cyclesThisYear * inp.chargingTimePerCycle * inp.driverLaborCost;
-    const bevEMIThisYear = (inp.bevFinancing === "emi" && t <= bevLoan.tenureYears) ? bevLoan.annualPayment : 0;
+    const bevEMIThisYear = interestPaidB + principalPaidB;
 
     cyclesSinceReplacement += cyclesThisYear;
     distanceSinceReplacement += inp.annualMileage;
@@ -188,7 +243,6 @@ function compute(inp) {
     const sohNow = Math.max(20, 100 - inp.batteryDegradationPerCycle * cyclesSinceReplacement);
 
     let boundBy = null;
-    // Battery replacement is strictly bound by reaching the SOH degradation threshold
     if (sohNow <= inp.batterySOHThreshold) boundBy = "SOH degradation";
 
     const batteryCost = boundBy ? inp.batteryReplacementCost : 0;
@@ -203,12 +257,17 @@ function compute(inp) {
     }
 
     const yearCostB = energyCost + maintCostB + insCostB + totalInfraMaintPerVehicle + downtimeCost + batteryCost + bevEMIThisYear;
-    bevBreak.Energy += energyCost;
-    bevBreak.Maintenance += maintCostB;
-    bevBreak.Insurance += insCostB;
-    bevBreak.Infrastructure += totalInfraMaintPerVehicle;
-    bevBreak["Charging downtime"] += downtimeCost;
-    bevBreak["Battery replacement"] += batteryCost;
+    
+    // Accumulate discounted NPV categories for Electric
+    bevBreak.Energy += energyCost * df;
+    bevBreak.Maintenance += maintCostB * df;
+    bevBreak.Insurance += insCostB * df;
+    bevBreak.Infrastructure += totalInfraMaintPerVehicle * df;
+    bevBreak["Charging downtime"] += downtimeCost * df;
+    bevBreak["Battery replacement"] += batteryCost * df;
+    bevBreak["Loan principal"] += principalPaidB * df;
+    bevBreak["Financing interest"] += interestPaidB * df;
+
     npvBEV += yearCostB * df;
     bevCum.push(bevCum[bevCum.length - 1] + yearCostB);
 
@@ -223,10 +282,16 @@ function compute(inp) {
   const dfN = 1 / Math.pow(1 + disc, n);
   const residualD = inp.dieselPurchasePrice * (inp.dieselResidualValue / 100);
   const residualB = inp.bevPurchasePrice * (inp.bevResidualValue / 100);
-  npvDiesel -= residualD * dfN;
-  npvBEV -= residualB * dfN;
+  
+  // Discount residual value back to Year 0 (NPV)
+  const discountedResidualD = residualD * dfN;
+  const discountedResidualB = residualB * dfN;
+
+  npvDiesel -= discountedResidualD;
+  npvBEV -= discountedResidualB;
   dieselCum[n] -= residualD;
   bevCum[n] -= residualB;
+  
   if (rows.length) {
     rows[rows.length - 1].diesel = dieselCum[n];
     rows[rows.length - 1].bev = bevCum[n];
@@ -239,7 +304,6 @@ function compute(inp) {
   const payloadDieselT = payloadDiesel / 1000;
   const payloadBEVT = payloadBEV / 1000;
 
-  // Payload Parity Scaling Ratios for Fleet Parity views
   const payloadRatio = payloadDieselT / payloadBEVT;
   const fleetSizeBEVEquated = inp.fleetSize * payloadRatio;
   const fleetStationsBEVEquated = inp.fleetStations * payloadRatio;
@@ -247,6 +311,10 @@ function compute(inp) {
 
   const costPerTonneKmDiesel = npvDiesel / (payloadDieselT * inp.annualMileage * n);
   const costPerTonneKmBEV = npvBEV / (payloadBEVT * inp.annualMileage * n);
+
+  // Set residual values as negative categories in breakdown to match cards perfectly
+  dieselBreak["Residual value"] = -discountedResidualD;
+  bevBreak["Residual value"] = -discountedResidualB;
 
   const breakdownData = [
     { category: "Acquisition", Diesel: dieselBreak.Acquisition, Electric: bevBreak.Acquisition },
@@ -258,6 +326,7 @@ function compute(inp) {
     { category: "Infrastructure", Diesel: 0, Electric: bevBreak.Infrastructure },
     { category: "Charging downtime", Diesel: 0, Electric: bevBreak["Charging downtime"] },
     { category: "Battery replacement", Diesel: 0, Electric: bevBreak["Battery replacement"] },
+    { category: "Residual value", Diesel: dieselBreak["Residual value"], Electric: bevBreak["Residual value"] }
   ];
 
   return {
@@ -872,5 +941,5 @@ export default function TCOCalculator() {
         </div>
       </div>
     </div>
-  )
+  );
 }
