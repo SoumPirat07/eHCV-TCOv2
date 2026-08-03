@@ -27,7 +27,7 @@ const DEFAULTS = {
   fuelEconomy: 4.,
   dieselPrice: 96,
   dieselPriceEscalation: 5,
-  dieselMaintCostPerKm: 1.5,
+  dieselMaintCostPerKm: 4,
   dieselInsuranceRate: 3,
   dieselResidualValue: 10,
   dieselFinancing: "cash", // "cash" | "emi"
@@ -43,7 +43,7 @@ const DEFAULTS = {
   batteryReplacementCost: 4000000,
   batteryDegradationPerCycle: 0.005,
   batterySOHThreshold: 80,
-  bevMaintCostPerKm: .5,
+  bevMaintCostPerKm: 4,
   bevInsurancePremiumDiff: 20,
   bevResidualValue: 5,
   bevFinancing: "cash", // "cash" | "emi"
