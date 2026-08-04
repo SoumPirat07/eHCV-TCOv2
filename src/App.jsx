@@ -243,8 +243,8 @@ export default function ComprehensiveTCOCalculator() {
       baseDefault.infrastructureTaxCredit = 5;
       baseDefault.chargingTimePerCycle = 1.3;
       baseDefault.electricityRate = 8.5;
-      baseDefault.depotLandLeaseMonthly = 120000; // Fixed colons to equals signs
-      baseDefault.depotDemandChargesMonthly = 80000; // Fixed colons to equals signs
+      baseDefault.depotLandLeaseMonthly = 120000;
+      baseDefault.depotDemandChargesMonthly = 80000;
       baseDefault.useDynamicSOHLimit = true;
     }
 
@@ -368,6 +368,13 @@ export default function ComprehensiveTCOCalculator() {
         let previousChargeKm = 0;
         let lastChargedFromSoC = 100;
 
+        // CRITICAL FIX: SOH-Degraded Station Siting
+        // Instead of spacing stations around a brand-new 100% SOH battery, 
+        // size the route grid so the truck has enough range at the target EOL threshold (e.g. 75% SOH).
+        // This adds more stations/stops naturally, preventing premature battery swaps.
+        const designSOHLimit = v.batterySOHThreshold || 75;
+        const plannedEffectiveCapacity = v.batteryCapacity * (designSOHLimit / 100);
+
         const recordChargeStop = (label, km, socBefore, chargeToSoC, isDepot) => {
           stopsLog.push({
             label,
@@ -394,6 +401,7 @@ export default function ComprehensiveTCOCalculator() {
             maxEnergyLegKWh = currentEnergySinceCharge;
           }
 
+          // Compute required SOH for this leg: SOH_req = (100 * energy_leg_kWh) / (battery_cap * usable_soc_fraction)
           const usableSoCWindow = (lastChargedFromSoC - v.safeSoCThreshold) / 100;
           const reqSOHFraction = currentEnergySinceCharge / (v.batteryCapacity * usableSoCWindow);
           const reqSOHPercent = reqSOHFraction * 100;
@@ -419,7 +427,8 @@ export default function ComprehensiveTCOCalculator() {
           const normalizeFactor = sumStretch > 0 ? 100 / sumStretch : 1;
           segWeightedEff = (segWeightedEff * normalizeFactor) || 1.0;
 
-          const socPctPerKm = 100 / (segWeightedEff * v.batteryCapacity);
+          // Charge logic evaluates SoC usage based on degraded EOL planned capacity
+          const socPctPerKm = 100 / (segWeightedEff * plannedEffectiveCapacity);
           let remainingSegDistance = seg.distance;
           let distanceIntoSegment = 0;
 
@@ -447,7 +456,7 @@ export default function ComprehensiveTCOCalculator() {
                 `Mid-Segment Fast Charger (${seg.from} \u2192 ${seg.to})`,
                 cumulativeDistance,
                 currentSoC,
-                85,
+                85, 
                 false
               );
               currentSoC = 85;
@@ -459,7 +468,7 @@ export default function ComprehensiveTCOCalculator() {
               `Terminal Depot (${seg.to})`,
               cumulativeDistance,
               currentSoC,
-              100,
+              100, 
               true
             );
             currentSoC = 100;
@@ -477,9 +486,10 @@ export default function ComprehensiveTCOCalculator() {
         }
       }
 
+      // Dynamic SOH threshold capped safely to prevent rapid swap triggers at 98%
       const resolvedSOHReplacementLimit = (v.type === "electric" && v.useDynamicSOHLimit)
-        ? Math.min(98, Math.max(v.batterySOHThreshold, criticalSOHLimit))
-        : (v.batterySOHThreshold || 80);
+        ? Math.min(95, Math.max(v.batterySOHThreshold, criticalSOHLimit))
+        : (v.batterySOHThreshold || 75);
 
       const chargingStopsCount = stopsLog.length;
       const chargingDowntimeHrs = v.type === "electric" ? chargingStopsCount * v.chargingTimePerCycle : 0;
@@ -663,6 +673,12 @@ export default function ComprehensiveTCOCalculator() {
       const totalCargoTonneKmFleet = totalCargoMovedOverTimeline * totalTripDistance;
       const costPerTonneKm = totalCargoTonneKmFleet > 0 ? npvTCOSum / totalCargoTonneKmFleet : 0;
 
+      // Range Calculations at 100% SOH (Start of Project)
+      const maxTheoreticalRange = v.type === "electric" ? v.batteryCapacity * avgRouteEfficiency : 0;
+      const operationalRangeAtStart = v.type === "electric" ? v.batteryCapacity * ((100 - v.safeSoCThreshold) / 100) * avgRouteEfficiency : 0;
+      const operationalRangeAtSOHLimit = v.type === "electric" ? operationalRangeAtStart * (resolvedSOHReplacementLimit / 100) : 0;
+      const replacementsPerVehicle = v.type === "electric" ? batteryReplacementLog.length : 0;
+
       return {
         ...v,
         payloadCap,
@@ -690,6 +706,10 @@ export default function ComprehensiveTCOCalculator() {
         batteryReplacementLog,
         sohTimeline,
         segmentOverloads,
+        maxTheoreticalRange,
+        operationalRangeAtStart,
+        operationalRangeAtSOHLimit,
+        replacementsPerVehicle
       };
     });
 
@@ -1423,7 +1443,7 @@ export default function ComprehensiveTCOCalculator() {
                     <div className="field">
                       <div style={{ display: "flex", flexDirection: "column" }}>
                         <span className="field-label" style={{ fontWeight: 600 }}>Adaptive Battery Lifecycle Sizing</span>
-                        <span style={{ fontSize: "10.5px", color: "var(--text-dim)" }}>Compute physical limit dynamically rather than assuming a static 80%?</span>
+                        <span style={{ fontSize: "10.5px", color: "var(--text-dim)" }}>Compute physical limit dynamically based on route range constraints?</span>
                       </div>
                       <input 
                         type="checkbox" 
@@ -1526,16 +1546,20 @@ export default function ComprehensiveTCOCalculator() {
                   <span className="num" style={{ fontWeight: 700, fontSize: "12.5px" }}>₹{v.costPerTonneKm.toFixed(3)}</span>
                 </div>
                 <div className="kpi-sub">
-                  Turnaround: <strong className="num">{v.turnaroundCycleHrs.toFixed(2)} Hrs</strong><br />
+                  Turnaround: <strong className="num">{v.turnaroundCycleHrs.toFixed(2) } Hrs</strong><br />
                   Trips/Yr/Unit: <strong className="num">{Math.round(v.tripsPerYearPerVehicle)}</strong><br />
                   Total fleet distance: <strong className="num">{Math.round(v.totalDistanceAcrossFleetYear).toLocaleString()} km/yr</strong><br />
                   {v.type === "electric" ? (
                     <>
                       Station Count: <strong className="num">{v.uniqueStationsCount} Stops</strong><br />
-                      Total Sized Chargers: <strong className="num">{v.totalChargersNeeded} Units</strong>
+                      Total Sized Chargers: <strong className="num">{v.totalChargersNeeded} Units</strong><br />
+                      Sized EV Fleet Size: <strong className="num" style={{ color: "var(--bev)" }}>{v.fleetSizeRequired} Deployments</strong>
                     </>
                   ) : (
-                    <span>Charging Stops: <strong className="num">0</strong></span>
+                    <>
+                      Sized Diesel Fleet Size: <strong className="num" style={{ color: "var(--diesel)" }}>{v.fleetSizeRequired} Deployments</strong><br />
+                      Charging Stops: <strong className="num">0</strong>
+                    </>
                   )}
                 </div>
               </div>
@@ -1578,32 +1602,67 @@ export default function ComprehensiveTCOCalculator() {
             </div>
           )}
 
-          {/* SOH Degradation and Replacement Summary */}
+          {/* SOH Degradation, Operational Ranges, and Replacement Summary */}
           <div style={{ marginBottom: "24px" }} className="grid-3">
             {results.computedVehicles.map((v, idx) => {
               if (v.type !== "electric") return null;
               return (
                 <div key={v.id} className="kpi-card" style={{ background: "var(--panel)", borderLeft: `4px solid ${VEHICLE_COLORS[idx % VEHICLE_COLORS.length]}` }}>
-                  <div className="kpi-label">{v.name} Battery Degradation & Life cycle policy</div>
+                  <div className="kpi-label">{v.name} Battery Sizing & Lifecycle</div>
                   
                   <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "12px" }}>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>Max Theoretical Range (100% SOH):</span>
+                      <strong className="num" style={{ fontSize: "12px" }}>{Math.round(v.maxTheoreticalRange)} km</strong>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>Operational Range at Start (100% SOH):</span>
+                      <strong className="num badge badge-info" style={{ fontSize: "12px" }}>{Math.round(v.operationalRangeAtStart)} km</strong>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>Operational Range at SOH Limit:</span>
+                      <strong className="num badge badge-warn" style={{ fontSize: "12px" }}>{Math.round(v.operationalRangeAtSOHLimit)} km</strong>
+                    </div>
+                    <hr style={{ border: 0, borderBottom: "1px solid var(--border)", margin: "4px 0" }} />
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
                       <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>Critical physical range SOH:</span>
-                      <strong className="num badge badge-warn" style={{ fontSize: "12px" }}>{v.criticalSOHLimit.toFixed(1)}% SOH</strong>
+                      <strong className="num" style={{ fontSize: "12px" }}>{v.criticalSOHLimit.toFixed(1)}% SOH</strong>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
-                      <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>Resolved trigger limit:</span>
-                      <strong className="num badge badge-info" style={{ fontSize: "12px" }}>{v.resolvedSOHReplacementLimit.toFixed(1)}% SOH</strong>
+                      <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>Resolved SOH replacement trigger:</span>
+                      <strong className="num" style={{ fontSize: "12px", fontWeight: "bold", color: "var(--bad)" }}>{v.resolvedSOHReplacementLimit.toFixed(1)}% SOH</strong>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
-                      <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>Analysis end SOH:</span>
+                      <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>Analysis end SOH (Year {results.years}):</span>
                       <strong className="num" style={{ fontSize: "12px" }}>{v.currentSOH.toFixed(1)}%</strong>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
-                      <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>Battery swaps completed:</span>
-                      <strong className="num" style={{ fontSize: "12px" }}>{v.batterySetsReplacedCount} sets</strong>
+                      <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>Swaps Completed (Per Vehicle):</span>
+                      <strong className="num" style={{ fontSize: "12px", fontWeight: "bold", color: "var(--bev)" }}>{v.replacementsPerVehicle} Swaps</strong>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>Total Fleet Battery Swaps:</span>
+                      <strong className="num" style={{ fontSize: "12px" }}>{v.batterySetsReplacedCount} Packs</strong>
                     </div>
                   </div>
+
+                  {v.batteryReplacementLog.length > 0 ? (
+                    <div style={{ marginTop: "12px", fontSize: "11px", background: "var(--panel-alt)", padding: "10px", borderRadius: "8px", border: "1px dashed var(--border)" }}>
+                      <strong>Pack Replacement Schedule:</strong>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "4px", marginTop: "6px" }}>
+                        {v.batteryReplacementLog.map((log, rIdx) => (
+                          <div key={rIdx} style={{ display: "flex", justifyContent: "space-between", color: "var(--text-dim)" }}>
+                            <span>Swap #{rIdx + 1}: Year {log.year}</span>
+                            <span>at {log.sohAtReplacement.toFixed(1)}% SOH</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: "12px", fontSize: "11px", color: "var(--text-dim)", fontStyle: "italic" }}>
+                      No battery pack replacements occurred during the {results.years}-year project lifecycle.
+                    </div>
+                  )}
 
                   <div style={{ fontSize: "11.5px", color: "var(--text-dim)", marginTop: "12px", lineHeight: "1.5", borderTop: "1px dashed var(--border)", paddingTop: "8px" }}>
                     {v.useDynamicSOHLimit ? (
@@ -1613,7 +1672,7 @@ export default function ComprehensiveTCOCalculator() {
                       </span>
                     ) : (
                       <span>
-                        SOH Replacement scheduled blindly at static <strong>{v.batterySOHThreshold}%</strong> limit.
+                        SOH Replacement scheduled at static <strong>{v.batterySOHThreshold}%</strong> limit.
                       </span>
                     )}
                   </div>
