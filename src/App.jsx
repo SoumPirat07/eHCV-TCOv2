@@ -46,10 +46,10 @@ function interpolateEfficiency(roadType, traffic, payload) {
   const road = EFFICIENCY_MATRIX[roadType] || EFFICIENCY_MATRIX["6 lane highway/Expressway"];
   const cond = road[traffic] || road["Medium"];
   const keys = [0, 20, 40, 60];
-  
+
   if (payload <= 0) return cond[0];
   if (payload >= 60) return cond[60];
-  
+
   let lowerKey = 0;
   let upperKey = 60;
   for (let i = 0; i < keys.length - 1; i++) {
@@ -59,7 +59,7 @@ function interpolateEfficiency(roadType, traffic, payload) {
       break;
     }
   }
-  
+
   const lowerVal = cond[lowerKey];
   const upperVal = cond[upperKey];
   const ratio = (payload - lowerKey) / (upperKey - lowerKey);
@@ -103,7 +103,7 @@ const INITIAL_VEHICLES = [
     tractorWeight: 8500,
     trailerWeight: 9000,
     gvwr: 55000,
-    baseFuelEconomy: 4.0, 
+    baseFuelEconomy: 4.0,
     fuelOrElectricPrice: 94, // ₹/l
     maintCostPerKm: 3.5,
     insuranceRatePct: 2.5,
@@ -334,12 +334,12 @@ export default function ComprehensiveTCOCalculator() {
       });
 
       const avgRouteEfficiency = weightedEnergyNeeded > 0 ? totalTripDistance / weightedEnergyNeeded : 1.0;
-      
+
       // Scale diesel fuel economy from average segment efficiency baseline ratio
       const baselineMediumEff = 1.21;
       const actualEfficiencyRatio = avgRouteEfficiency / baselineMediumEff;
-      const vehicleSpecificEconomy = v.type === "diesel" 
-        ? Math.max(0.5, v.baseFuelEconomy * actualEfficiencyRatio) 
+      const vehicleSpecificEconomy = v.type === "diesel"
+        ? Math.max(0.5, v.baseFuelEconomy * actualEfficiencyRatio)
         : avgRouteEfficiency; // km/kWh for electric
 
       // SoC Node Tracing along the point-to-point sequence
@@ -377,7 +377,7 @@ export default function ComprehensiveTCOCalculator() {
 
       // Turnaround calculations incorporating separate downtimes
       const chargingDowntimeHrs = v.type === "electric" ? chargingStopsCount * v.chargingTimePerCycle : 0;
-      
+
       const annualScheduledDowntimeHrs = v.scheduledDowntimeDays * 24;
       const annualUnscheduledDowntimeHrs = v.unscheduledDowntimeHrs;
       const totalAnnualFixedDowntimeHrs = annualScheduledDowntimeHrs + annualUnscheduledDowntimeHrs;
@@ -388,7 +388,7 @@ export default function ComprehensiveTCOCalculator() {
       // Calculate total potential operational loops run by a single vehicle over the year
       const totalOperatingHoursAvailableYear = (workingDaysPerMonth * 12 * dailyOperatingLimitHrs) - totalAnnualFixedDowntimeHrs;
       const tripsPerYearPerVehicle = fullTurnaroundCycleHrs > 0 ? totalOperatingHoursAvailableYear / fullTurnaroundCycleHrs : 0;
-      
+
       // Calculate cargo throughput capacity
       const cappedPayloadPerTrip = Math.min(tripMaxPayload, payloadCap);
       const annualCargoThroughputPerVehicle = tripsPerYearPerVehicle * cappedPayloadPerTrip;
@@ -436,7 +436,7 @@ export default function ComprehensiveTCOCalculator() {
       // Cumulative Cost NPV Sizing Arrays
       let npvTCOSum = (loanUpfrontDownpayment * fleetSizeRequired) + capitalSetupInfra;
       let cumCostTimeline = [npvTCOSum];
-      
+
       const breakdown = {
         upfront: (loanUpfrontDownpayment * fleetSizeRequired) + capitalSetupInfra,
         fuelOrEnergy: 0,
@@ -495,10 +495,10 @@ export default function ComprehensiveTCOCalculator() {
           const annualMileagePerVehicle = totalDistanceAcrossFleetYear / fleetSizeRequired;
           const rangePerCharge = (v.batteryCapacity * 0.85) / Math.max(0.01, 1 / avgRouteEfficiency);
           const cyclesPerYearPerVehicle = annualMileagePerVehicle / rangePerCharge;
-          
+
           cyclesAccumulated += cyclesPerYearPerVehicle;
           const projectedSOH = 100 - (cyclesAccumulated * v.batteryDegradationPerCycle);
-          
+
           if (projectedSOH <= v.batterySOHThreshold) {
             yearBatteryCost = v.batteryReplacementCost * fleetSizeRequired * multGen;
             cyclesAccumulated = 0;
@@ -613,7 +613,7 @@ export default function ComprehensiveTCOCalculator() {
   return (
     <div className={`wrap ${darkMode ? "dark-theme" : "light-theme"}`}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght=600;700&family=Inter:wght=400;500;600;700&family=JetBrains+Mono:wght=500;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap');
 
         /* Dynamic Theme Swapping Styles */
         .wrap.dark-theme {
@@ -689,7 +689,7 @@ export default function ComprehensiveTCOCalculator() {
           gap: 12px;
         }
 
-        .theme-btn, .reset-btn {
+        .theme-btn, .reset-btn, .add-btn {
           display: flex;
           align-items: center;
           gap: 6px;
@@ -702,8 +702,12 @@ export default function ComprehensiveTCOCalculator() {
           font-size: 13px;
         }
 
-        .theme-btn:hover, .reset-btn:hover {
+        .theme-btn:hover, .reset-btn:hover, .add-btn:hover {
           border-color: var(--bev);
+        }
+
+        .add-btn {
+          margin-top: 12px;
         }
 
         .vertical-stack {
@@ -1000,6 +1004,24 @@ export default function ComprehensiveTCOCalculator() {
           border-bottom: 1.5px solid var(--border);
           padding-bottom: 4px;
         }
+
+        .legend-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 16px;
+          font-size: 12px;
+          color: var(--text-dim);
+          margin-bottom: 8px;
+        }
+
+        .legend-dot {
+          display: inline-block;
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          margin-right: 6px;
+          vertical-align: middle;
+        }
       `}</style>
 
       {/* Top Header Controls */}
@@ -1039,7 +1061,7 @@ export default function ComprehensiveTCOCalculator() {
       </div>
 
       <div className="vertical-stack">
-        
+
         {/* SECTION 1: Logistics Sizing Requirements */}
         <div className="panel">
           <h2><Package size={18} color="var(--bev)" /> 1. Logistics Sizing & Turnaround Requirements</h2>
@@ -1063,7 +1085,7 @@ export default function ComprehensiveTCOCalculator() {
         {/* SECTION 2: Point-to-Point Route Matrix & Duty Cycle Planner */}
         <div className="panel">
           <h2><MapPin size={18} color="var(--bev)" /> 2. Multi-Node Route Planner & Duty Cycle Breakdown</h2>
-          
+
           <div className="table-container">
             <table className="route-table">
               <thead>
@@ -1099,8 +1121,8 @@ export default function ComprehensiveTCOCalculator() {
                           <input type="number" value={seg.avgSpeed} onChange={(e) => updateSegmentProp(seg.id, "avgSpeed", parseFloat(e.target.value) || 0)} />
                         </td>
                         <td>
-                          <button 
-                            className="expand-btn" 
+                          <button
+                            className="expand-btn"
                             onClick={() => setExpandedSegmentId(expandedSegmentId === seg.id ? null : seg.id)}
                           >
                             {expandedSegmentId === seg.id ? "Collapse Matrix" : `Configure Matrix (${activeStretchesSum}%)`}
@@ -1136,10 +1158,10 @@ export default function ComprehensiveTCOCalculator() {
                                         <div key={traffic} className="field">
                                           <span style={{ fontSize: "11px" }}>{traffic} Traffic</span>
                                           <div className="field-input">
-                                            <input 
-                                              type="number" 
-                                              value={currentVal} 
-                                              onChange={(e) => updateStretchPercentage(seg.id, road, traffic, parseFloat(e.target.value) || 0)} 
+                                            <input
+                                              type="number"
+                                              value={currentVal}
+                                              onChange={(e) => updateStretchPercentage(seg.id, road, traffic, parseFloat(e.target.value) || 0)}
                                               style={{ width: "50px", padding: "4px" }}
                                             />
                                             <span style={{ fontSize: "9px", paddingRight: "4px" }}>%</span>
@@ -1211,10 +1233,10 @@ export default function ComprehensiveTCOCalculator() {
                     <span style={{ fontSize: "10px", textTransform: "uppercase", fontWeight: "700", color: v.type === "electric" ? "var(--bev)" : "var(--diesel)" }}>
                       {v.type.toUpperCase()} PROFILE
                     </span>
-                    <input 
-                      type="text" 
-                      value={v.name} 
-                      className="vcard-title num" 
+                    <input
+                      type="text"
+                      value={v.name}
+                      className="vcard-title num"
                       onChange={(e) => updateVehicleProp(v.id, "name", e.target.value)}
                       style={{ background: "transparent", border: "none", color: "var(--text)", borderBottom: "1px dashed var(--border)", width: "200px" }}
                     />
@@ -1252,7 +1274,7 @@ export default function ComprehensiveTCOCalculator() {
                 <Field label="Maintenance Cost" value={v.maintCostPerKm} onChange={(val) => updateVehicleProp(v.id, "maintCostPerKm", val)} suffix="₹/km" step={0.1} />
                 <Field label="Insurance Premium Rate" value={v.insuranceRatePct} onChange={(val) => updateVehicleProp(v.id, "insuranceRatePct", val)} suffix="%" step={0.25} />
                 <Field label="Residual Asset Value" value={v.residualPct} onChange={(val) => updateVehicleProp(v.id, "residualPct", val)} suffix="%" step={1} />
-                
+
                 <Field label="Driver Monthly Wage" value={v.driverSalaryMonthly} onChange={(val) => updateVehicleProp(v.id, "driverSalaryMonthly", val)} suffix="₹" step={1000} />
                 <Field label="Tolls per Round-Trip" value={v.tollCostPerTrip} onChange={(val) => updateVehicleProp(v.id, "tollCostPerTrip", val)} suffix="₹" step={250} />
                 <Field label="Tyre Cost (Set of 12)" value={v.tyreCostPerSet} onChange={(val) => updateVehicleProp(v.id, "tyreCostPerSet", val)} suffix="₹" step={5000} />
@@ -1398,13 +1420,13 @@ export default function ComprehensiveTCOCalculator() {
                 <YAxis stroke="var(--text-dim)" tickFormatter={(v) => inrCompact(v)} width={80} />
                 <Tooltip contentStyle={{ background: "var(--panel)", border: "1px solid var(--border)", color: "var(--text)" }} formatter={(v) => inr(v)} />
                 {results.computedVehicles.map((v, idx) => (
-                  <Line 
-                    key={v.id} 
-                    type="monotone" 
-                    dataKey={v.name} 
-                    stroke={VEHICLE_COLORS[idx % VEHICLE_COLORS.length]} 
-                    strokeWidth={3} 
-                    dot={{ r: 4 }} 
+                  <Line
+                    key={v.id}
+                    type="monotone"
+                    dataKey={v.name}
+                    stroke={VEHICLE_COLORS[idx % VEHICLE_COLORS.length]}
+                    strokeWidth={3}
+                    dot={{ r: 4 }}
                   />
                 ))}
               </LineChart>
@@ -1460,10 +1482,10 @@ export default function ComprehensiveTCOCalculator() {
                 <Tooltip contentStyle={{ background: "var(--panel)", border: "1px solid var(--border)", color: "var(--text)" }} formatter={(v) => inr(v)} />
                 <Legend />
                 {results.computedVehicles.map((v, idx) => (
-                  <Bar 
-                    key={v.id} 
-                    dataKey={v.name} 
-                    fill={VEHICLE_COLORS[idx % VEHICLE_COLORS.length]} 
+                  <Bar
+                    key={v.id}
+                    dataKey={v.name}
+                    fill={VEHICLE_COLORS[idx % VEHICLE_COLORS.length]}
                   />
                 ))}
               </BarChart>
@@ -1518,4 +1540,24 @@ function Field({ label, value, onChange, suffix, step = 1, min = 0 }) {
       </div>
     </div>
   );
+}
+
+// Currency formatting helpers
+function inr(value) {
+  if (value === null || value === undefined || isNaN(value)) return "₹0";
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function inrCompact(value) {
+  if (value === null || value === undefined || isNaN(value)) return "₹0";
+  const abs = Math.abs(value);
+  const sign = value < 0 ? "-" : "";
+  if (abs >= 1e7) return `${sign}₹${(abs / 1e7).toFixed(2)} Cr`;
+  if (abs >= 1e5) return `${sign}₹${(abs / 1e5).toFixed(2)} L`;
+  if (abs >= 1e3) return `${sign}₹${(abs / 1e3).toFixed(1)} K`;
+  return `${sign}₹${abs.toFixed(0)}`;
 }
