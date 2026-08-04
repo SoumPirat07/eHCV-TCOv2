@@ -66,6 +66,23 @@ function interpolateEfficiency(roadType, traffic, payload) {
   return lowerVal + ratio * (upperVal - lowerVal);
 }
 
+// Shared weighted-average-efficiency helper. Used both by the main TCO calc
+// and by the live preview badge next to each segment's duty cycle matrix, so
+// the number shown while editing always matches what the model actually uses.
+function computeWeightedEfficiency(stretches, payload) {
+  let weighted = 0;
+  let sumStretch = 0;
+  stretches.forEach((st) => {
+    if (st.percentage > 0) {
+      const eff = interpolateEfficiency(st.roadType, st.traffic, payload);
+      weighted += eff * (st.percentage / 100);
+      sumStretch += st.percentage;
+    }
+  });
+  const normalizeFactor = sumStretch > 0 ? 100 / sumStretch : 1;
+  return weighted * normalizeFactor;
+}
+
 // Generate default balanced duty cycle stretches
 const generateDefaultStretches = () => {
   const stretches = [];
@@ -342,14 +359,19 @@ export default function ComprehensiveTCOCalculator() {
         ? Math.max(0.5, v.baseFuelEconomy * actualEfficiencyRatio)
         : avgRouteEfficiency; // km/kWh for electric
 
-      // SoC Node Tracing along the point-to-point sequence
+      // SoC Node Tracing along the continuous point-to-point route path.
+      // Charging is evaluated continuously along each segment's length (not just
+      // once at the segment boundary), so a single long segment correctly triggers
+      // more than one stop if needed, and each stop is located at the actual km
+      // point where the safe SoC margin is reached — not lumped at the "from" node.
       let chargingStopsCount = 0;
       let stopsLog = [];
-      if (v.type === "electric") {
+      if (v.type === "electric" && v.batteryCapacity > 0) {
         let currentSoC = 100;
-        let totalTripSegmentDistance = 0;
+        let cumulativeDistance = 0;
+        const MAX_STOPS_SAFETY_CAP = 300; // guards against pathological configs (e.g. near-zero battery)
 
-        routeSegments.forEach((seg, idx) => {
+        routeSegments.forEach((seg) => {
           let segWeightedEff = 0;
           let sumStretch = 0;
           seg.stretches.forEach((st) => {
@@ -362,16 +384,40 @@ export default function ComprehensiveTCOCalculator() {
           const normalizeFactor = sumStretch > 0 ? 100 / sumStretch : 1;
           segWeightedEff = segWeightedEff * normalizeFactor;
 
-          const energyRequired = seg.distance / Math.max(0.01, segWeightedEff);
-          const energySoCPct = (energyRequired / v.batteryCapacity) * 100;
+          // % of SoC consumed per km travelled under this segment's duty cycle mix
+          const socPctPerKm = segWeightedEff > 0 ? 100 / (segWeightedEff * v.batteryCapacity) : 0;
 
-          if (currentSoC - energySoCPct < v.safeSoCThreshold) {
-            chargingStopsCount++;
-            stopsLog.push({ stopName: seg.from, distanceTraveled: totalTripSegmentDistance, socBeforeCharge: currentSoC.toFixed(1) });
-            currentSoC = 85; // Fast charge to standard 85% limit
+          let remainingSegDistance = seg.distance;
+          let distanceIntoSegment = 0;
+
+          while (remainingSegDistance > 0.0001 && chargingStopsCount < MAX_STOPS_SAFETY_CAP) {
+            const availableSoC = currentSoC - v.safeSoCThreshold;
+            const maxDistanceBeforeCharge = socPctPerKm > 0 ? Math.max(0, availableSoC / socPctPerKm) : remainingSegDistance;
+
+            if (maxDistanceBeforeCharge >= remainingSegDistance) {
+              // Finishes the rest of this segment without needing to stop
+              currentSoC -= remainingSegDistance * socPctPerKm;
+              cumulativeDistance += remainingSegDistance;
+              distanceIntoSegment += remainingSegDistance;
+              remainingSegDistance = 0;
+            } else {
+              // Runs down to the safe SoC threshold partway through the segment
+              const travelDist = maxDistanceBeforeCharge;
+              currentSoC -= travelDist * socPctPerKm;
+              cumulativeDistance += travelDist;
+              distanceIntoSegment += travelDist;
+              remainingSegDistance -= travelDist;
+
+              chargingStopsCount++;
+              stopsLog.push({
+                segmentLabel: `${seg.from} \u2192 ${seg.to}`,
+                distanceIntoSegment: Math.round(distanceIntoSegment),
+                cumulativeDistance: Math.round(cumulativeDistance),
+                socBeforeCharge: currentSoC.toFixed(1),
+              });
+              currentSoC = 85; // Fast charge to standard 85% limit
+            }
           }
-          currentSoC = Math.max(0, currentSoC - energySoCPct);
-          totalTripSegmentDistance += seg.distance;
         });
       }
 
@@ -400,17 +446,33 @@ export default function ComprehensiveTCOCalculator() {
       const totalTripsAcrossFleetYear = tripsPerYearPerVehicle * fleetSizeRequired;
       const totalDistanceAcrossFleetYear = totalTripsAcrossFleetYear * totalTripDistance;
 
-      // Setup infrastructure requirements for EVs
+      // Setup infrastructure requirements for EVs — sized per physical charging
+      // location along the route (point-to-point), not lumped into one aggregate
+      // pool. Every vehicle in the fleet runs the same fixed route/duty-cycle, so
+      // each location in stopsLog gets exactly one charge event per loop completed
+      // by the fleet — that per-location demand is what sizes chargers there.
+      // NOTE: availability is based on station uptime (~24h, minus downtime), not
+      // dailyOperatingLimitHrs — that figure caps the *truck's* driving day, not
+      // how many hours a fixed charging station can serve vehicles.
       let chargersNeeded = 0;
       let stationsNeeded = 0;
       let capitalSetupInfra = 0;
+      let chargingLocations = [];
 
-      if (v.type === "electric") {
-        const totalChargesPerYearFleet = totalTripsAcrossFleetYear * chargingStopsCount;
-        const chargeSlotsPerDayPerCharger = dailyOperatingLimitHrs / Math.max(0.5, v.chargingTimePerCycle);
-        const dailyChargesDemand = totalChargesPerYearFleet / (workingDaysPerMonth * 12);
-        chargersNeeded = Math.max(1, Math.ceil(dailyChargesDemand / chargeSlotsPerDayPerCharger));
-        stationsNeeded = Math.max(1, Math.ceil(chargersNeeded / 3)); // Assume 3 chargers per depot
+      if (v.type === "electric" && stopsLog.length > 0) {
+        const STATION_DAILY_UPTIME_HRS = 22; // ~round the clock, minus routine downtime
+        const chargeSlotsPerDayPerCharger = STATION_DAILY_UPTIME_HRS / Math.max(0.1, v.chargingTimePerCycle);
+        const dailyLoopsAcrossFleet = totalTripsAcrossFleetYear / (workingDaysPerMonth * 12);
+
+        stopsLog.forEach((stop) => {
+          const dailyChargesAtLocation = dailyLoopsAcrossFleet; // 1 charge / vehicle / loop at this stop
+          const chargersHere = Math.max(1, Math.ceil(dailyChargesAtLocation / chargeSlotsPerDayPerCharger));
+          const stationsHere = Math.max(1, Math.ceil(chargersHere / 3)); // Assume 3 chargers per depot
+          chargersNeeded += chargersHere;
+          stationsNeeded += stationsHere;
+          chargingLocations.push({ ...stop, chargersHere, stationsHere });
+        });
+
         capitalSetupInfra = (stationsNeeded * v.stationCost + chargersNeeded * v.chargerCost) * (1 - v.infrastructureTaxCredit / 100);
       }
 
@@ -453,6 +515,9 @@ export default function ComprehensiveTCOCalculator() {
       let currentSOH = 100;
       let cyclesAccumulated = 0;
       let batterySetsReplacedCount = 0;
+      let batteryReplacementLog = [];
+      let sohTimeline = [];
+      let mileageSinceLastReplacement = 0;
 
       for (let t = 1; t <= years; t++) {
         const df = 1 / Math.pow(1 + dfRate, t);
@@ -496,17 +561,25 @@ export default function ComprehensiveTCOCalculator() {
           const rangePerCharge = (v.batteryCapacity * 0.85) / Math.max(0.01, 1 / avgRouteEfficiency);
           const cyclesPerYearPerVehicle = annualMileagePerVehicle / rangePerCharge;
 
+          mileageSinceLastReplacement += annualMileagePerVehicle;
           cyclesAccumulated += cyclesPerYearPerVehicle;
           const projectedSOH = 100 - (cyclesAccumulated * v.batteryDegradationPerCycle);
 
           if (projectedSOH <= v.batterySOHThreshold) {
             yearBatteryCost = v.batteryReplacementCost * fleetSizeRequired * multGen;
+            batteryReplacementLog.push({
+              year: t,
+              sohAtReplacement: Math.max(0, projectedSOH),
+              mileageSinceLastReplacement: Math.round(mileageSinceLastReplacement),
+            });
             cyclesAccumulated = 0;
+            mileageSinceLastReplacement = 0;
             batterySetsReplacedCount += fleetSizeRequired;
             currentSOH = 100;
           } else {
             currentSOH = Math.max(10, projectedSOH);
           }
+          sohTimeline.push({ year: t, soh: Math.round(currentSOH * 10) / 10 });
         }
 
         // Infrastructure Upkeep
@@ -558,6 +631,7 @@ export default function ComprehensiveTCOCalculator() {
         vehicleSpecificEconomy,
         chargingStopsCount,
         stopsLog,
+        chargingLocations,
         turnaroundCycleHrs: fullTurnaroundCycleHrs,
         fleetSizeRequired,
         tripsPerYearPerVehicle,
@@ -571,6 +645,8 @@ export default function ComprehensiveTCOCalculator() {
         costPerTonneKm,
         currentSOH,
         batterySetsReplacedCount,
+        batteryReplacementLog,
+        sohTimeline,
         segmentOverloads,
       };
     });
@@ -1140,11 +1216,29 @@ export default function ComprehensiveTCOCalculator() {
                         <tr>
                           <td colSpan="7">
                             <div className="stretch-drawer">
-                              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
                                 <span style={{ fontWeight: 600, fontSize: "12.5px" }}>Configure Segment Stretch Allocation Matrix (Must sum to 100%)</span>
                                 <span className="num" style={{ fontWeight: 700, color: activeStretchesSum !== 100 ? "var(--bad)" : "var(--good)" }}>
                                   Current Sum: {activeStretchesSum}%
                                 </span>
+                              </div>
+
+                              <div style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "6px",
+                                background: "var(--panel)",
+                                border: "1px solid var(--bev)",
+                                borderRadius: "6px",
+                                padding: "6px 10px",
+                                marginBottom: "10px",
+                                fontSize: "12px"
+                              }}>
+                                <Zap size={13} color="var(--bev)" />
+                                <span style={{ color: "var(--text-dim)" }}>Weighted Avg Efficiency at {seg.payload}T:</span>
+                                <strong className="num" style={{ color: "var(--bev)" }}>
+                                  {computeWeightedEfficiency(seg.stretches, seg.payload).toFixed(3)} km/kWh-equiv
+                                </strong>
                               </div>
 
                               <div className="stretch-grid">
@@ -1379,16 +1473,16 @@ export default function ComprehensiveTCOCalculator() {
                   if (v.type !== "electric") return null;
                   return (
                     <div key={v.id} style={{ flex: 1, minWidth: "280px" }}>
-                      <strong style={{ fontSize: "13px" }}>{v.name} Nodes:</strong>
-                      {v.stopsLog.length === 0 ? (
+                      <strong style={{ fontSize: "13px" }}>{v.name} Charging Locations:</strong>
+                      {v.chargingLocations.length === 0 ? (
                         <div style={{ fontSize: "12px", color: "var(--text-dim)", marginTop: "4px" }}>
-                          No charging stops required. Complete loop runs cleanly within the safe limit.
+                          No charging stops required. Complete loop runs cleanly within the safe limit — no charging infrastructure sized for this profile.
                         </div>
                       ) : (
-                        <ul style={{ margin: "6px 0", paddingLeft: "16px", fontSize: "12px", color: "var(--text-dim)", lineHeight: "1.4" }}>
-                          {v.stopsLog.map((log, lIdx) => (
+                        <ul style={{ margin: "6px 0", paddingLeft: "16px", fontSize: "12px", color: "var(--text-dim)", lineHeight: "1.5" }}>
+                          {v.chargingLocations.map((log, lIdx) => (
                             <li key={lIdx}>
-                              Charge triggered at <strong>{log.stopName}</strong> (Distance: {log.distanceTraveled} km, SoC: {log.socBeforeCharge}%)
+                              Stop {lIdx + 1} on <strong>{log.segmentLabel}</strong>, {log.distanceIntoSegment} km in ({log.cumulativeDistance} km total) — arrives at <strong className="num">{log.socBeforeCharge}%</strong> SoC · sized for <strong className="num">{log.chargersHere} charger{log.chargersHere > 1 ? "s" : ""} / {log.stationsHere} station{log.stationsHere > 1 ? "s" : ""}</strong>
                             </li>
                           ))}
                         </ul>
@@ -1501,8 +1595,33 @@ export default function ComprehensiveTCOCalculator() {
                   <div className="kpi-label">{v.name} Battery Health</div>
                   <div style={{ fontSize: "14px", marginTop: "8px" }}>
                     Period End SOH: <strong className="num" style={{ color: v.currentSOH < 80 ? "var(--diesel)" : "var(--good)" }}>{v.currentSOH.toFixed(1)}%</strong><br />
-                    Degradation Replacements: <strong className="num">{v.batterySetsReplacedCount} sets</strong>
+                    Degradation Replacements: <strong className="num">{v.batterySetsReplacedCount} sets ({v.batteryReplacementLog.length} events, per vehicle)</strong>
                   </div>
+
+                  {v.sohTimeline.length > 0 && (
+                    <div style={{ fontSize: "11.5px", color: "var(--text-dim)", marginTop: "8px" }}>
+                      SOH ranged <strong className="num">{Math.min(...v.sohTimeline.map(s => s.soh))}% – 100%</strong> across the {results.years}-year window (resets to 100% after each pack swap)
+                    </div>
+                  )}
+
+                  {v.batteryReplacementLog.length > 0 ? (
+                    <>
+                      <div style={{ fontSize: "11.5px", color: "var(--text-dim)", marginTop: "4px" }}>
+                        Avg pack life: <strong className="num">{Math.round(v.batteryReplacementLog.reduce((s, e) => s + e.mileageSinceLastReplacement, 0) / v.batteryReplacementLog.length).toLocaleString()} km</strong> between swaps
+                      </div>
+                      <ul style={{ margin: "8px 0 0", paddingLeft: "16px", fontSize: "11.5px", color: "var(--text-dim)", lineHeight: "1.5" }}>
+                        {v.batteryReplacementLog.map((ev, eIdx) => (
+                          <li key={eIdx}>
+                            Year {ev.year}: swapped at <strong className="num">{ev.sohAtReplacement.toFixed(1)}% SOH</strong>, after <strong className="num">{ev.mileageSinceLastReplacement.toLocaleString()} km</strong> on that pack
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : (
+                    <div style={{ fontSize: "11.5px", color: "var(--text-dim)", marginTop: "8px" }}>
+                      No replacement needed within the {results.years}-year analysis window at this degradation rate.
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1512,7 +1631,7 @@ export default function ComprehensiveTCOCalculator() {
           <div style={{ fontSize: "11.5px", color: "var(--text-dim)", marginTop: "24px", display: "flex", gap: "8px", alignItems: "flex-start", lineHeight: "1.4" }}>
             <Info size={14} style={{ flexShrink: 0, marginTop: "2px" }} />
             <span>
-              <strong>Simulation Verification Note:</strong> Cost per tonne-km is evaluated on total cargo capacity transported throughout the {results.years}-year operational timeline. Segment-level efficiencies are determined by calculating the weighted average of each road type's custom stretch percentage. Downtime parameters incorporate both scheduled/unscheduled operational delays and dynamic charging stoppages to model fleet sizing accurately.
+              <strong>Simulation Verification Note:</strong> Cost per tonne-km is evaluated on total cargo capacity transported throughout the {results.years}-year operational timeline. Segment-level efficiencies are determined by calculating the weighted average of each road type's custom stretch percentage. Downtime parameters incorporate both scheduled/unscheduled operational delays and dynamic charging stoppages to model fleet sizing accurately. Charging stops are traced continuously along each segment (not just at segment boundaries), so a single long stretch can require more than one stop; chargers and stations are then sized independently at each resulting stop location, assuming ~22 hrs/day of station uptime.
             </span>
           </div>
 
