@@ -160,7 +160,7 @@ const INITIAL_VEHICLES = [
     tyresFront: 2, tyreCostFront: 21000, tyreLifeFront: 45000,
     tyresRear: 4, tyreCostRear: 22000, tyreLifeRear: 50000,
     tyresTrailer: 12, tyreCostTrailer: 22000, tyreLifeTrailer: 60000,
-    utilizationPct: 85, 
+    utilizationPct: 40, 
     scheduledDowntimeDays: 12,
     unscheduledDowntimeHrs: 48,
     miscCostPerMonth: 8000, // New: Misc Cost
@@ -207,7 +207,7 @@ const INITIAL_VEHICLES = [
     depotLandLeaseMonthly: 120000,
     depotDemandChargesMonthly: 80000,
     useDynamicSOHLimit: true,
-    miscCostPerMonth: 1350000, // New: Misc Cost
+    miscCostPerMonth: 50000, // New: Misc Cost
     miscCostNotes: "Route permits, software telemetry fees, Chai/Paani", // New: Misc Notes
   }
 ];
@@ -267,7 +267,7 @@ export default function ComprehensiveTCOCalculator() {
       tyresTrailer: 12, tyreCostTrailer: 22000, tyreLifeTrailer: 80000,
       scheduledDowntimeDays: 12,
       unscheduledDowntimeHrs: 120,
-      miscCostPerMonth: 1350000,
+      miscCostPerMonth: 50000,
       miscCostNotes: "Permits, subscriptions, ad-hoc, Chai/Paani",
     };
 
@@ -286,7 +286,7 @@ export default function ComprehensiveTCOCalculator() {
       baseDefault.chargerMaintenance = 50000;
       baseDefault.infrastructureTaxCredit = 5;
       baseDefault.chargeSpeedKW = 150;
-      baseDefault.chargingTimeMarginPct = 10;
+      baseDefault.chargingTimeMarginPct = 200;
       baseDefault.electricityRate = 8.5;
       baseDefault.depotLandLeaseMonthly = 120000;
       baseDefault.depotDemandChargesMonthly = 80000;
