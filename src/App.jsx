@@ -151,7 +151,7 @@ const INITIAL_VEHICLES = [
     tractorWeight: 9000,
     trailerWeight: 9000,
     gvwr: 55000,
-    baseUnloadedEconomy: 5.0, // km/l
+    baseUnloadedEconomy: 4, // km/l
     baseLoadedEconomy: 3.2,   // km/l
     fuelOrElectricPrice: 96,
     maintCostPerKm: 2.2,
@@ -199,13 +199,13 @@ const INITIAL_VEHICLES = [
     scheduledDowntimeDays: 10,
     unscheduledDowntimeHrs: 36,
     safeSoCThreshold: 15,
-    stationCost: 3500000,
+    stationCost: 5000000,
     stationMaintenance: 120000,
     chargerCost: 1500000,
     chargerMaintenance: 50000,
-    infrastructureTaxCredit: 5,
-    chargingTimePerCycle: 1.25,
-    electricityRate: 8.5,
+    infrastructureTaxCredit: 0,
+    chargingTimePerCycle: 1.5,
+    electricityRate: 5,
     depotLandLeaseMonthly: 120000,
     depotDemandChargesMonthly: 80000,
     useDynamicSOHLimit: true,
@@ -214,10 +214,10 @@ const INITIAL_VEHICLES = [
 
 export default function ComprehensiveTCOCalculator() {
   const [darkMode, setDarkMode] = useState(true);
-  const [monthlyCargoVolume, setMonthlyCargoVolume] = useState(12000);
-  const [workingDaysPerMonth, setWorkingDaysPerMonth] = useState(25);
-  const [dailyOperatingLimitHrs, setDailyOperatingLimitHrs] = useState(18);
-  const [loadingUnloadingTimePerTrip, setLoadingUnloadingTimePerTrip] = useState(3.5);
+  const [monthlyCargoVolume, setMonthlyCargoVolume] = useState(85000);
+  const [workingDaysPerMonth, setWorkingDaysPerMonth] = useState(20);
+  const [dailyOperatingLimitHrs, setDailyOperatingLimitHrs] = useState(15);
+  const [loadingUnloadingTimePerTrip, setLoadingUnloadingTimePerTrip] = useState(5);
 
   const [analysisPeriod, setAnalysisPeriod] = useState(8);
   const [discountRate, setDiscountRate] = useState(9);
