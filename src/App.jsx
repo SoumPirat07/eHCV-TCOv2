@@ -133,10 +133,9 @@ const generateDefaultStretches = () => {
 };
 
 const DEFAULT_ROUTE = [
-  { id: "1", from: "Mumbai", to: "Pune", distance: 150, payload: 35, avgSpeed: 60, stretches: generateDefaultStretches(), hasDepotAtTo: true },
-  { id: "2", from: "Pune", to: "Satara", distance: 120, payload: 35, avgSpeed: 50, stretches: generateDefaultStretches(), hasDepotAtTo: false },
-  { id: "3", from: "Satara", to: "Kolhapur", distance: 130, payload: 35, avgSpeed: 55, stretches: generateDefaultStretches(), hasDepotAtTo: false },
-  { id: "4", from: "Kolhapur", to: "Mumbai", distance: 400, payload: 0, avgSpeed: 65, stretches: generateDefaultStretches(), hasDepotAtTo: true }
+  { id: "1", from: "A", to: "B", distance: 500, payload: 35, avgSpeed: 45, stretches: generateDefaultStretches(), hasDepotAtTo: true },
+  { id: "2", from: "B", to: "C", distance: 50, payload: 0, avgSpeed: 40, stretches: generateDefaultStretches(), hasDepotAtTo: true },
+  { id: "3", from: "C", to: "A", distance: 500, payload: 35, avgSpeed: 45, stretches: generateDefaultStretches(), hasDepotAtTo: true }
 ];
 
 const VEHICLE_COLORS = ["#21bfa9", "#e29532", "#b16af0", "#38bdf8", "#ec4899", "#10b981"];
@@ -178,8 +177,8 @@ const INITIAL_VEHICLES = [
     tractorWeight: 11000,
     trailerWeight: 9000,
     gvwr: 55000,
-    baseUnloadedEconomy: 0.6, // km/kWh
-    baseLoadedEconomy: 0.31,  // km/kWh
+    baseUnloadedEconomy: 0.8, // km/kWh
+    baseLoadedEconomy: 0.35,  // km/kWh
     batteryCapacity: 282,
     batteryReplacementCost: 4000000,
     batteryDegradationPerCycle: 0.005,
