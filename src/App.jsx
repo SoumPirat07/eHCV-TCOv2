@@ -10,7 +10,6 @@ import {
 } from "recharts";
 
 // 1. Core Lookup Matrix for DIESEL Duty Cycle Efficiency
-// Diesels thrive on highways (high speed, constant gear) and perform poorly in city/broken roads (idling, low gears).
 const DIESEL_EFFICIENCY_MATRIX = {
   "6 lane highway/Expressway": {
     "High":   { 0: 1.10, 20: 0.90, 40: 0.70, 60: 0.60 },
@@ -40,13 +39,11 @@ const DIESEL_EFFICIENCY_MATRIX = {
 };
 
 // 2. Core Lookup Matrix for EV Duty Cycle Efficiency (New Physics Model)
-// EVs thrive in city/slow traffic (Regenerative braking, low aerodynamic drag) 
-// and perform poorly on fast open highways (No regen, exponential drag).
 const EV_EFFICIENCY_MATRIX = {
   "6 lane highway/Expressway": {
-    "High":   { 0: 1.35, 20: 1.08, 40: 0.82, 60: 0.69 }, // Slower traffic = less drag, better efficiency
+    "High":   { 0: 1.35, 20: 1.08, 40: 0.82, 60: 0.69 },
     "Medium": { 0: 1.21, 20: 0.97, 40: 0.74, 60: 0.62 }, // MATCHING BASELINE REFERENCE
-    "Low":    { 0: 1.10, 20: 0.88, 40: 0.68, 60: 0.57 }  // High speed = high drag, worst EV efficiency
+    "Low":    { 0: 1.10, 20: 0.88, 40: 0.68, 60: 0.57 }
   },
   "4 lane highway": {
     "High":   { 0: 1.40, 20: 1.12, 40: 0.85, 60: 0.72 },
@@ -59,12 +56,12 @@ const EV_EFFICIENCY_MATRIX = {
     "Low":    { 0: 1.22, 20: 0.98, 40: 0.74, 60: 0.63 }
   },
   "City road": {
-    "High":   { 0: 1.42, 20: 1.14, 40: 0.86, 60: 0.73 }, // Good regen, but heavy stop/go HVAC load
-    "Medium": { 0: 1.55, 20: 1.24, 40: 0.95, 60: 0.80 }, // Ideal EV physics (Smooth, slow, great regen)
+    "High":   { 0: 1.42, 20: 1.14, 40: 0.86, 60: 0.73 },
+    "Medium": { 0: 1.55, 20: 1.24, 40: 0.95, 60: 0.80 },
     "Low":    { 0: 1.48, 20: 1.18, 40: 0.90, 60: 0.76 }
   },
   "Broken road": {
-    "High":   { 0: 1.15, 20: 0.92, 40: 0.70, 60: 0.59 }, // Poor rolling resistance limits efficiency gains
+    "High":   { 0: 1.15, 20: 0.92, 40: 0.70, 60: 0.59 },
     "Medium": { 0: 1.20, 20: 0.96, 40: 0.73, 60: 0.61 },
     "Low":    { 0: 1.25, 20: 1.00, 40: 0.76, 60: 0.64 }
   }
@@ -73,7 +70,6 @@ const EV_EFFICIENCY_MATRIX = {
 const ROAD_TYPES = Object.keys(DIESEL_EFFICIENCY_MATRIX);
 const TRAFFIC_CONDITIONS = ["High", "Medium", "Low"];
 
-// Interpolation Helper (Now takes vehicleType into account)
 function interpolateEfficiency(roadType, traffic, payload, vehicleType = "diesel") {
   const activeMatrix = vehicleType === "electric" ? EV_EFFICIENCY_MATRIX : DIESEL_EFFICIENCY_MATRIX;
   const road = activeMatrix[roadType] || activeMatrix["6 lane highway/Expressway"];
@@ -99,7 +95,6 @@ function interpolateEfficiency(roadType, traffic, payload, vehicleType = "diesel
   return lowerVal + ratio * (upperVal - lowerVal);
 }
 
-// Generates an agnostic multiplier comparing the segment configuration to baseline optimal highway
 function computeWeightedMultiplier(stretches, payload, vehicleType = "diesel") {
   let weightedMultiplier = 0;
   let sumStretch = 0;
@@ -150,8 +145,8 @@ const INITIAL_VEHICLES = [
     tractorWeight: 9000,
     trailerWeight: 9000,
     gvwr: 55000,
-    baseUnloadedEconomy: 4, // km/l
-    baseLoadedEconomy: 3.2,   // km/l
+    baseUnloadedEconomy: 4, 
+    baseLoadedEconomy: 3.2, 
     fuelOrElectricPrice: 96,
     maintCostPerKm: 2.2,
     insuranceRatePct: 2.5,
@@ -165,6 +160,7 @@ const INITIAL_VEHICLES = [
     tyresFront: 2, tyreCostFront: 15000, tyreLifeFront: 100000,
     tyresRear: 4, tyreCostRear: 18000, tyreLifeRear: 90000,
     tyresTrailer: 12, tyreCostTrailer: 16000, tyreLifeTrailer: 80000,
+    utilizationPct: 85, // New: Active Driving vs Rest downtime
     scheduledDowntimeDays: 12,
     unscheduledDowntimeHrs: 48,
   },
@@ -177,8 +173,8 @@ const INITIAL_VEHICLES = [
     tractorWeight: 11000,
     trailerWeight: 9000,
     gvwr: 55000,
-    baseUnloadedEconomy: 0.8, // km/kWh
-    baseLoadedEconomy: 0.35,  // km/kWh
+    baseUnloadedEconomy: 0.8, 
+    baseLoadedEconomy: 0.35,  
     batteryCapacity: 282,
     batteryReplacementCost: 4000000,
     batteryDegradationPerCycle: 0.005,
@@ -203,7 +199,8 @@ const INITIAL_VEHICLES = [
     chargerCost: 1500000,
     chargerMaintenance: 50000,
     infrastructureTaxCredit: 0,
-    chargingTimePerCycle: 1.5,
+    chargeSpeedKW: 150, // New: output scale for dynamic time
+    chargingTimeMarginPct: 10, // New: overhead time factor
     electricityRate: 5,
     depotLandLeaseMonthly: 120000,
     depotDemandChargesMonthly: 80000,
@@ -270,6 +267,7 @@ export default function ComprehensiveTCOCalculator() {
 
     if (type === "diesel") {
       baseDefault.fuelOrElectricPrice = 94;
+      baseDefault.utilizationPct = 85;
     } else {
       baseDefault.batteryCapacity = 500;
       baseDefault.batteryReplacementCost = 3800000;
@@ -281,7 +279,8 @@ export default function ComprehensiveTCOCalculator() {
       baseDefault.chargerCost = 1500000;
       baseDefault.chargerMaintenance = 50000;
       baseDefault.infrastructureTaxCredit = 5;
-      baseDefault.chargingTimePerCycle = 1.3;
+      baseDefault.chargeSpeedKW = 150;
+      baseDefault.chargingTimeMarginPct = 10;
       baseDefault.electricityRate = 8.5;
       baseDefault.depotLandLeaseMonthly = 120000;
       baseDefault.depotDemandChargesMonthly = 80000;
@@ -358,20 +357,16 @@ export default function ComprehensiveTCOCalculator() {
       const segmentOverloads = [];
       const segmentEconomies = [];
 
-      // Route traversal computing energy demand using interpolated Base Efficiency * specific Matrix Multiplier
       routeSegments.forEach((seg, idx) => {
         totalTripDistance += seg.distance;
-        totalTripDrivingHrs += seg.distance / Math.max(1, seg.avgSpeed); // Speed solely drives turnaround duration
+        totalTripDrivingHrs += seg.distance / Math.max(1, seg.avgSpeed);
         if (seg.payload > tripMaxPayload) tripMaxPayload = seg.payload;
         if (seg.payload > payloadCap) segmentOverloads.push({ segmentIdx: idx + 1, payload: seg.payload, cap: payloadCap });
 
         const cappedPayload = Math.min(seg.payload, payloadCap);
         const payloadRatio = payloadCap > 0 ? cappedPayload / payloadCap : 0;
         
-        // Linear Interpolate Baseline Economy for current segment payload (km/l or km/kWh)
         const baseEconomy = v.baseUnloadedEconomy - (v.baseUnloadedEconomy - v.baseLoadedEconomy) * payloadRatio;
-        
-        // Matrix modifies this economy dynamically depending on if it's EV or Diesel!
         const segWeightedMultiplier = computeWeightedMultiplier(seg.stretches, cappedPayload, v.type);
         const segVehicleEconomy = baseEconomy * segWeightedMultiplier;
         
@@ -379,15 +374,14 @@ export default function ComprehensiveTCOCalculator() {
         weightedEnergyNeeded += seg.distance / Math.max(0.01, segVehicleEconomy);
       });
 
-      // Equivalent to net effective route km/l or km/kWh
       const avgRouteEconomy = weightedEnergyNeeded > 0 ? totalTripDistance / weightedEnergyNeeded : 1.0;
 
       let stopsLog = [];
       let uniqueChargingStopsMap = {};
       let criticalSOHLimit = 20.0;
       let maxEnergyLegKWh = 0;
+      let chargingDowntimeHrs = 0; // Dynamic charging time aggregator
 
-      // Sequential SOH tracing for EV Infrastructure Siting
       if (v.type === "electric" && v.batteryCapacity > 0) {
         let currentSoC = 100;
         let cumulativeDistance = 0;
@@ -399,6 +393,14 @@ export default function ComprehensiveTCOCalculator() {
         const plannedEffectiveCapacity = v.batteryCapacity * (designSOHLimit / 100);
 
         const recordChargeStop = (label, km, socBefore, chargeToSoC, isDepot) => {
+          
+          // Calculate precise charging time based on required energy
+          const energyReplenishedKWh = Math.max(0, ((chargeToSoC - socBefore) / 100) * plannedEffectiveCapacity);
+          const baseChargeTimeHrs = energyReplenishedKWh / Math.max(1, v.chargeSpeedKW || 150);
+          const finalChargeTimeHrs = baseChargeTimeHrs * (1 + ((v.chargingTimeMarginPct || 0) / 100));
+
+          chargingDowntimeHrs += finalChargeTimeHrs;
+
           stopsLog.push({
             label,
             km: Math.round(km),
@@ -407,13 +409,22 @@ export default function ComprehensiveTCOCalculator() {
             isDepot,
             energyLegConsumed: currentEnergySinceCharge,
             startSoCWindow: lastChargedFromSoC,
+            chargeTimeHrs: finalChargeTimeHrs
           });
 
           const uniqueKey = `${label}_${Math.round(km)}`;
           if (!uniqueChargingStopsMap[uniqueKey]) {
-            uniqueChargingStopsMap[uniqueKey] = { label, km: Math.round(km), isDepot, chargesPerLoop: 0 };
+            uniqueChargingStopsMap[uniqueKey] = { 
+              label, 
+              km: Math.round(km), 
+              isDepot, 
+              chargesPerLoop: 0, 
+              timePerChargeHrs: finalChargeTimeHrs 
+            };
           }
           uniqueChargingStopsMap[uniqueKey].chargesPerLoop += 1;
+          // Capture max time if stop occurs identically multiple times
+          uniqueChargingStopsMap[uniqueKey].timePerChargeHrs = Math.max(uniqueChargingStopsMap[uniqueKey].timePerChargeHrs, finalChargeTimeHrs);
 
           if (currentEnergySinceCharge > maxEnergyLegKWh) maxEnergyLegKWh = currentEnergySinceCharge;
 
@@ -428,8 +439,6 @@ export default function ComprehensiveTCOCalculator() {
 
         routeSegments.forEach((seg, idx) => {
           const segVehicleEconomy = segmentEconomies[idx];
-          
-          // FIX: Clamp values so division by zero isn't possible if user clears input box
           const safeEconomy = Math.max(0.01, segVehicleEconomy);
           const safeCapacity = Math.max(1, plannedEffectiveCapacity);
           const socPctPerKm = 100 / (safeEconomy * safeCapacity);
@@ -451,11 +460,7 @@ export default function ComprehensiveTCOCalculator() {
             } else {
               const travelDist = maxDistanceBeforeCharge;
               
-              // FIX: Emergency failsafe breaker to completely prevent infinite loops
-              if (travelDist <= 0.0001) {
-                remainingSegDistance = 0; 
-                break; 
-              }
+              if (travelDist <= 0.0001) { remainingSegDistance = 0; break; }
 
               const energyConsumed = travelDist / safeEconomy;
               currentEnergySinceCharge += energyConsumed;
@@ -477,14 +482,20 @@ export default function ComprehensiveTCOCalculator() {
         if (currentEnergySinceCharge > 0) recordChargeStop(`Home Base Depot Terminal`, cumulativeDistance, currentSoC, 100, true);
       }
 
+      // Compute Diesel utilization (Rest stops/Downtime on route)
+      let dieselRestDowntimeHrs = 0;
+      if (v.type === "diesel") {
+        const safeUtil = Math.max(1, Math.min(100, v.utilizationPct || 100)); // Guard against divide-by-zero
+        dieselRestDowntimeHrs = (totalTripDrivingHrs / (safeUtil / 100)) - totalTripDrivingHrs;
+      }
+
       const resolvedSOHReplacementLimit = (v.type === "electric" && v.useDynamicSOHLimit)
         ? Math.min(95, Math.max(v.batterySOHThreshold, criticalSOHLimit))
         : (v.batterySOHThreshold || 75);
 
       const chargingStopsCount = stopsLog.length;
-      const chargingDowntimeHrs = v.type === "electric" ? chargingStopsCount * v.chargingTimePerCycle : 0;
       const totalAnnualFixedDowntimeHrs = (v.scheduledDowntimeDays * 24) + v.unscheduledDowntimeHrs;
-      const fullTurnaroundCycleHrs = totalTripDrivingHrs + loadingUnloadingTimePerTrip + chargingDowntimeHrs;
+      const fullTurnaroundCycleHrs = totalTripDrivingHrs + loadingUnloadingTimePerTrip + chargingDowntimeHrs + dieselRestDowntimeHrs;
 
       const totalOperatingHoursAvailableYear = (workingDaysPerMonth * 12 * dailyOperatingLimitHrs) - totalAnnualFixedDowntimeHrs;
       const tripsPerYearPerVehicle = fullTurnaroundCycleHrs > 0 ? totalOperatingHoursAvailableYear / fullTurnaroundCycleHrs : 0;
@@ -502,11 +513,11 @@ export default function ComprehensiveTCOCalculator() {
 
       if (v.type === "electric") {
         const STATION_DAILY_UPTIME_HRS = 22;
-        const chargeSlotsPerDayPerCharger = STATION_DAILY_UPTIME_HRS / Math.max(0.1, v.chargingTimePerCycle);
         const dailyLoopsAcrossFleet = totalTripsAcrossFleetYear / (workingDaysPerMonth * 12);
 
         Object.keys(uniqueChargingStopsMap).forEach((key) => {
           const rawStop = uniqueChargingStopsMap[key];
+          const chargeSlotsPerDayPerCharger = STATION_DAILY_UPTIME_HRS / Math.max(0.1, rawStop.timePerChargeHrs);
           const dailyChargesAtThisLocation = dailyLoopsAcrossFleet * rawStop.chargesPerLoop;
           const chargersSized = Math.max(1, Math.ceil(dailyChargesAtThisLocation / chargeSlotsPerDayPerCharger));
           
@@ -628,6 +639,8 @@ export default function ComprehensiveTCOCalculator() {
         payloadCap,
         avgRouteEconomy,
         chargingStopsCount,
+        chargingDowntimeHrs,
+        dieselRestDowntimeHrs,
         stopsLog,
         uniqueStationsList,
         turnaroundCycleHrs: fullTurnaroundCycleHrs,
@@ -1010,6 +1023,9 @@ export default function ComprehensiveTCOCalculator() {
                 <Field label="Toll Overhead Per Trip" value={v.tollCostPerTrip} onChange={(val) => updateVehicleProp(v.id, "tollCostPerTrip", val)} suffix="₹" step={250} />
 
                 <div className="section-tag">Downtime allocations</div>
+                {v.type === "diesel" && (
+                  <Field label="Route En-route Utilization (Driving %)" value={v.utilizationPct} onChange={(val) => updateVehicleProp(v.id, "utilizationPct", val)} suffix="%" step={1} min={1} max={100} />
+                )}
                 <Field label="Scheduled Fleet Service" value={v.scheduledDowntimeDays} onChange={(val) => updateVehicleProp(v.id, "scheduledDowntimeDays", val)} suffix="Days/Year" step={1} />
                 <Field label="Unscheduled Fleet Outages" value={v.unscheduledDowntimeHrs} onChange={(val) => updateVehicleProp(v.id, "unscheduledDowntimeHrs", val)} suffix="Hours/Year" step={1} />
 
@@ -1021,7 +1037,8 @@ export default function ComprehensiveTCOCalculator() {
                     <Field label="Charger Dispenser Unit Cost" value={v.chargerCost} onChange={(val) => updateVehicleProp(v.id, "chargerCost", val)} suffix="₹/unit" step={50000} />
                     <Field label="Charger Annual Upkeep" value={v.chargerMaintenance} onChange={(val) => updateVehicleProp(v.id, "chargerMaintenance", val)} suffix="₹/yr" step={5000} />
                     <Field label="Infra Subsidies / Incentives" value={v.infrastructureTaxCredit} onChange={(val) => updateVehicleProp(v.id, "infrastructureTaxCredit", val)} suffix="%" step={1} />
-                    <Field label="Fast-Charging Window" value={v.chargingTimePerCycle} onChange={(val) => updateVehicleProp(v.id, "chargingTimePerCycle", val)} suffix="Hours" step={0.1} />
+                    <Field label="Charger Output Speed" value={v.chargeSpeedKW} onChange={(val) => updateVehicleProp(v.id, "chargeSpeedKW", val)} suffix="kW" step={10} />
+                    <Field label="Charging Time Margin" value={v.chargingTimeMarginPct} onChange={(val) => updateVehicleProp(v.id, "chargingTimeMarginPct", val)} suffix="%" step={1} />
                     <Field label="Depot Electricity Rate" value={v.electricityRate} onChange={(val) => updateVehicleProp(v.id, "electricityRate", val)} suffix="₹/kWh" step={0.5} />
                     <Field label="Monthly Depot Land Lease" value={v.depotLandLeaseMonthly} onChange={(val) => updateVehicleProp(v.id, "depotLandLeaseMonthly", val)} suffix="₹" step={5000} />
                     <Field label="Monthly Peak Demand Fee" value={v.depotDemandChargesMonthly} onChange={(val) => updateVehicleProp(v.id, "depotDemandChargesMonthly", val)} suffix="₹" step={5000} />
@@ -1132,7 +1149,8 @@ export default function ComprehensiveTCOCalculator() {
                               <strong>Stop {lIdx + 1}: {log.label}</strong> (at {log.km} km)<br />
                               <div style={{ color: "var(--text-dim)", marginTop: "4px" }}>
                                 Leg Energy: <span className="num">{Math.round(log.energyLegConsumed)} kWh</span> | 
-                                State of Charge: <span className="num">{log.socBefore}% SoC</span> → <span className="num">{log.socAfter}% SoC</span>
+                                SoC: <span className="num">{log.socBefore}%</span> → <span className="num">{log.socAfter}%</span> |
+                                Charge Time: <span className="num">{(log.chargeTimeHrs * 60).toFixed(0)} min</span>
                               </div>
                             </div>
                           ))}
@@ -1333,12 +1351,12 @@ export default function ComprehensiveTCOCalculator() {
   );
 }
 
-function Field({ label, value, onChange, suffix, step = 1, min = 0 }) {
+function Field({ label, value, onChange, suffix, step = 1, min = 0, max }) {
   return (
     <div className="field">
       <span className="field-label">{label}</span>
       <div className="field-input">
-        <input type="number" value={value} step={step} min={min} onChange={(e) => onChange(parseFloat(e.target.value) || 0)} />
+        <input type="number" value={value} step={step} min={min} max={max} onChange={(e) => onChange(parseFloat(e.target.value) || 0)} />
         {suffix && <span className="field-suffix">{suffix}</span>}
       </div>
     </div>
