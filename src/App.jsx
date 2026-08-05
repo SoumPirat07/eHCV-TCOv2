@@ -163,7 +163,7 @@ const INITIAL_VEHICLES = [
     utilizationPct: 40, 
     scheduledDowntimeDays: 12,
     unscheduledDowntimeHrs: 48,
-    miscCostPerMonth: 8000, // New: Misc Cost
+    miscCostPerMonth: 50000, // New: Misc Cost
     miscCostNotes: "Route permits, random parking fees", // New: Misc Notes
   },
   {
@@ -190,9 +190,9 @@ const INITIAL_VEHICLES = [
     loanTenure: 10,
     driverSalaryMonthly: 45000,
     tollCostPerTrip: 3500,
-    tyresFront: 2, tyreCostFront: 15000, tyreLifeFront: 45000,
-    tyresRear: 4, tyreCostRear: 18000, tyreLifeRear: 50000,
-    tyresTrailer: 12, tyreCostTrailer: 16000, tyreLifeTrailer: 65000,
+    tyresFront: 2, tyreCostFront: 21000, tyreLifeFront: 45000,
+    tyresRear: 4, tyreCostRear: 22000, tyreLifeRear: 50000,
+    tyresTrailer: 12, tyreCostTrailer: 22000, tyreLifeTrailer: 65000,
     scheduledDowntimeDays: 10,
     unscheduledDowntimeHrs: 36,
     safeSoCThreshold: 15,
