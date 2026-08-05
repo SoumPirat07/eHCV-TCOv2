@@ -160,7 +160,7 @@ const INITIAL_VEHICLES = [
     tyresFront: 2, tyreCostFront: 15000, tyreLifeFront: 100000,
     tyresRear: 4, tyreCostRear: 18000, tyreLifeRear: 90000,
     tyresTrailer: 12, tyreCostTrailer: 16000, tyreLifeTrailer: 80000,
-    utilizationPct: 85, // New: Active Driving vs Rest downtime
+    utilizationPct: 85, 
     scheduledDowntimeDays: 12,
     unscheduledDowntimeHrs: 48,
   },
@@ -199,8 +199,8 @@ const INITIAL_VEHICLES = [
     chargerCost: 1500000,
     chargerMaintenance: 50000,
     infrastructureTaxCredit: 0,
-    chargeSpeedKW: 150, // New: output scale for dynamic time
-    chargingTimeMarginPct: 10, // New: overhead time factor
+    chargeSpeedKW: 150, 
+    chargingTimeMarginPct: 10, 
     electricityRate: 5,
     depotLandLeaseMonthly: 120000,
     depotDemandChargesMonthly: 80000,
@@ -380,7 +380,7 @@ export default function ComprehensiveTCOCalculator() {
       let uniqueChargingStopsMap = {};
       let criticalSOHLimit = 20.0;
       let maxEnergyLegKWh = 0;
-      let chargingDowntimeHrs = 0; // Dynamic charging time aggregator
+      let chargingDowntimeHrs = 0; 
 
       if (v.type === "electric" && v.batteryCapacity > 0) {
         let currentSoC = 100;
@@ -394,7 +394,6 @@ export default function ComprehensiveTCOCalculator() {
 
         const recordChargeStop = (label, km, socBefore, chargeToSoC, isDepot) => {
           
-          // Calculate precise charging time based on required energy
           const energyReplenishedKWh = Math.max(0, ((chargeToSoC - socBefore) / 100) * plannedEffectiveCapacity);
           const baseChargeTimeHrs = energyReplenishedKWh / Math.max(1, v.chargeSpeedKW || 150);
           const finalChargeTimeHrs = baseChargeTimeHrs * (1 + ((v.chargingTimeMarginPct || 0) / 100));
@@ -423,7 +422,6 @@ export default function ComprehensiveTCOCalculator() {
             };
           }
           uniqueChargingStopsMap[uniqueKey].chargesPerLoop += 1;
-          // Capture max time if stop occurs identically multiple times
           uniqueChargingStopsMap[uniqueKey].timePerChargeHrs = Math.max(uniqueChargingStopsMap[uniqueKey].timePerChargeHrs, finalChargeTimeHrs);
 
           if (currentEnergySinceCharge > maxEnergyLegKWh) maxEnergyLegKWh = currentEnergySinceCharge;
@@ -469,8 +467,9 @@ export default function ComprehensiveTCOCalculator() {
               distanceIntoSegment += travelDist;
               remainingSegDistance -= travelDist;
 
-              recordChargeStop(`Mid-Segment Fast Charger (${seg.from} \u2192 ${seg.to})`, cumulativeDistance, currentSoC, 85, false);
-              currentSoC = 85;
+              // UPDATED: Now charges fully to 100% instead of 85% mid-route
+              recordChargeStop(`Mid-Segment Fast Charger (${seg.from} \u2192 ${seg.to})`, cumulativeDistance, currentSoC, 100, false);
+              currentSoC = 100;
             }
           }
           if (seg.hasDepotAtTo) {
@@ -482,10 +481,9 @@ export default function ComprehensiveTCOCalculator() {
         if (currentEnergySinceCharge > 0) recordChargeStop(`Home Base Depot Terminal`, cumulativeDistance, currentSoC, 100, true);
       }
 
-      // Compute Diesel utilization (Rest stops/Downtime on route)
       let dieselRestDowntimeHrs = 0;
       if (v.type === "diesel") {
-        const safeUtil = Math.max(1, Math.min(100, v.utilizationPct || 100)); // Guard against divide-by-zero
+        const safeUtil = Math.max(1, Math.min(100, v.utilizationPct || 100)); 
         dieselRestDowntimeHrs = (totalTripDrivingHrs / (safeUtil / 100)) - totalTripDrivingHrs;
       }
 
@@ -579,7 +577,10 @@ export default function ComprehensiveTCOCalculator() {
         let yearBatteryCost = 0;
         if (v.type === "electric") {
           const annualMileagePerVehicle = totalDistanceAcrossFleetYear / fleetSizeRequired;
-          const rangePerCharge = (v.batteryCapacity * (85 - v.safeSoCThreshold) / 100) * avgRouteEconomy; 
+          
+          // UPDATED: Battery lifespan is now calculated against a full 100% top-off instead of 85%
+          const rangePerCharge = (v.batteryCapacity * (100 - v.safeSoCThreshold) / 100) * avgRouteEconomy; 
+          
           const cyclesToFailure = (100 - resolvedSOHReplacementLimit) / v.batteryDegradationPerCycle;
           const lifespanKm = cyclesToFailure * rangePerCharge;
 
@@ -1377,3 +1378,4 @@ function inrCompact(value) {
   if (abs >= 1e3) return `${sign}₹${(abs / 1e3).toFixed(1)} K`;
   return `${sign}₹${abs.toFixed(0)}`;
 }
+
