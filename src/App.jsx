@@ -146,51 +146,53 @@ const INITIAL_VEHICLES = [
     trailerWeight: 9000,
     gvwr: 55000,
     baseUnloadedEconomy: 4, 
-    baseLoadedEconomy: 3.2, 
+    baseLoadedEconomy: 3, 
     fuelOrElectricPrice: 96,
-    maintCostPerKm: 2.2,
-    insuranceRatePct: 2.5,
+    maintCostPerKm: 2.5,
+    insuranceRatePct: 1.5,
     residualPct: 10,
     financing: "emi",
     downPaymentPct: 20,
     interestRate: 10,
     loanTenure: 7,
-    driverSalaryMonthly: 35000,
+    driverSalaryMonthly: 45000,
     tollCostPerTrip: 3500,
-    tyresFront: 2, tyreCostFront: 15000, tyreLifeFront: 100000,
-    tyresRear: 4, tyreCostRear: 18000, tyreLifeRear: 90000,
-    tyresTrailer: 12, tyreCostTrailer: 16000, tyreLifeTrailer: 80000,
+    tyresFront: 2, tyreCostFront: 21000, tyreLifeFront: 45000,
+    tyresRear: 4, tyreCostRear: 22000, tyreLifeRear: 50000,
+    tyresTrailer: 12, tyreCostTrailer: 22000, tyreLifeTrailer: 60000,
     utilizationPct: 85, 
     scheduledDowntimeDays: 12,
     unscheduledDowntimeHrs: 48,
+    miscCostPerMonth: 8000, // New: Misc Cost
+    miscCostNotes: "Route permits, random parking fees", // New: Misc Notes
   },
   {
     id: "v-bev-1",
     name: "Electric BEV 55T",
     type: "electric",
-    purchasePrice: 10000000,
+    purchasePrice: 9300000,
     gstRate: 5,
     tractorWeight: 11000,
     trailerWeight: 9000,
     gvwr: 55000,
     baseUnloadedEconomy: 0.8, 
-    baseLoadedEconomy: 0.35,  
+    baseLoadedEconomy: 0.4,  
     batteryCapacity: 282,
     batteryReplacementCost: 4000000,
     batteryDegradationPerCycle: 0.005,
     batterySOHThreshold: 75,
-    maintCostPerKm: 2.2,
-    insuranceRatePct: 2.8,
+    maintCostPerKm: 2.5,
+    insuranceRatePct: 1.5,
     residualPct: 8,
     financing: "emi",
     downPaymentPct: 20,
     interestRate: 10.0,
     loanTenure: 10,
-    driverSalaryMonthly: 35000,
+    driverSalaryMonthly: 45000,
     tollCostPerTrip: 3500,
-    tyresFront: 2, tyreCostFront: 15000, tyreLifeFront: 100000,
-    tyresRear: 4, tyreCostRear: 18000, tyreLifeRear: 90000,
-    tyresTrailer: 12, tyreCostTrailer: 16000, tyreLifeTrailer: 80000,
+    tyresFront: 2, tyreCostFront: 15000, tyreLifeFront: 45000,
+    tyresRear: 4, tyreCostRear: 18000, tyreLifeRear: 50000,
+    tyresTrailer: 12, tyreCostTrailer: 16000, tyreLifeTrailer: 65000,
     scheduledDowntimeDays: 10,
     unscheduledDowntimeHrs: 36,
     safeSoCThreshold: 15,
@@ -205,18 +207,20 @@ const INITIAL_VEHICLES = [
     depotLandLeaseMonthly: 120000,
     depotDemandChargesMonthly: 80000,
     useDynamicSOHLimit: true,
+    miscCostPerMonth: 1350000, // New: Misc Cost
+    miscCostNotes: "Route permits, software telemetry fees, Chai/Paani", // New: Misc Notes
   }
 ];
 
 export default function ComprehensiveTCOCalculator() {
   const [darkMode, setDarkMode] = useState(true);
   const [monthlyCargoVolume, setMonthlyCargoVolume] = useState(85000);
-  const [workingDaysPerMonth, setWorkingDaysPerMonth] = useState(20);
-  const [dailyOperatingLimitHrs, setDailyOperatingLimitHrs] = useState(15);
+  const [workingDaysPerMonth, setWorkingDaysPerMonth] = useState(24);
+  const [dailyOperatingLimitHrs, setDailyOperatingLimitHrs] = useState(16);
   const [loadingUnloadingTimePerTrip, setLoadingUnloadingTimePerTrip] = useState(5);
 
-  const [analysisPeriod, setAnalysisPeriod] = useState(8);
-  const [discountRate, setDiscountRate] = useState(9);
+  const [analysisPeriod, setAnalysisPeriod] = useState(10);
+  const [discountRate, setDiscountRate] = useState(7);
 
   const [escGeneral, setEscGeneral] = useState(4.0);
   const [escFuel, setEscFuel] = useState(5.0);
@@ -258,11 +262,13 @@ export default function ComprehensiveTCOCalculator() {
       loanTenure: 7,
       driverSalaryMonthly: 35000,
       tollCostPerTrip: 3500,
-      tyresFront: 2, tyreCostFront: 15000, tyreLifeFront: 100000,
-      tyresRear: 4, tyreCostRear: 18000, tyreLifeRear: 90000,
-      tyresTrailer: 12, tyreCostTrailer: 16000, tyreLifeTrailer: 80000,
+      tyresFront: 2, tyreCostFront: 21000, tyreLifeFront: 100000,
+      tyresRear: 4, tyreCostRear: 22000, tyreLifeRear: 90000,
+      tyresTrailer: 12, tyreCostTrailer: 22000, tyreLifeTrailer: 80000,
       scheduledDowntimeDays: 12,
-      unscheduledDowntimeHrs: 45,
+      unscheduledDowntimeHrs: 120,
+      miscCostPerMonth: 1350000,
+      miscCostNotes: "Permits, subscriptions, ad-hoc, Chai/Paani",
     };
 
     if (type === "diesel") {
@@ -467,7 +473,6 @@ export default function ComprehensiveTCOCalculator() {
               distanceIntoSegment += travelDist;
               remainingSegDistance -= travelDist;
 
-              // UPDATED: Now charges fully to 100% instead of 85% mid-route
               recordChargeStop(`Mid-Segment Fast Charger (${seg.from} \u2192 ${seg.to})`, cumulativeDistance, currentSoC, 100, false);
               currentSoC = 100;
             }
@@ -544,7 +549,9 @@ export default function ComprehensiveTCOCalculator() {
 
       let npvTCOSum = (loanUpfrontDownpayment * fleetSizeRequired) + capitalSetupInfra;
       let cumCostTimeline = [npvTCOSum];
-      const breakdown = { upfront: npvTCOSum, fuelOrEnergy: 0, emi: 0, maintenance: 0, wages: 0, tolls: 0, tyres: 0, batteryReplacements: 0, infraMaintenance: 0, residuals: 0 };
+      
+      // Setup the accumulated breakdown tracker object including our new miscellaneous expense category
+      const breakdown = { upfront: npvTCOSum, fuelOrEnergy: 0, emi: 0, maintenance: 0, wages: 0, tolls: 0, tyres: 0, batteryReplacements: 0, infraMaintenance: 0, misc: 0, residuals: 0 };
 
       let currentSOH = 100;
       let mileageSinceLastReplacement = 0;
@@ -567,6 +574,7 @@ export default function ComprehensiveTCOCalculator() {
         const yearIns = totalUpfrontGSTPrice * (v.insuranceRatePct / 100) * multGen * fleetSizeRequired;
         const yearWages = v.driverSalaryMonthly * 12 * multW * fleetSizeRequired;
         const yearTolls = v.tollCostPerTrip * totalTripsAcrossFleetYear * multGen;
+        const yearMisc = (v.miscCostPerMonth || 0) * 12 * multGen * fleetSizeRequired;
 
         const yearTyres = totalDistanceAcrossFleetYear * (
           (v.tyresFront * v.tyreCostFront / Math.max(1, v.tyreLifeFront)) +
@@ -577,10 +585,7 @@ export default function ComprehensiveTCOCalculator() {
         let yearBatteryCost = 0;
         if (v.type === "electric") {
           const annualMileagePerVehicle = totalDistanceAcrossFleetYear / fleetSizeRequired;
-          
-          // UPDATED: Battery lifespan is now calculated against a full 100% top-off instead of 85%
           const rangePerCharge = (v.batteryCapacity * (100 - v.safeSoCThreshold) / 100) * avgRouteEconomy; 
-          
           const cyclesToFailure = (100 - resolvedSOHReplacementLimit) / v.batteryDegradationPerCycle;
           const lifespanKm = cyclesToFailure * rangePerCharge;
 
@@ -609,7 +614,7 @@ export default function ComprehensiveTCOCalculator() {
           yearInfraOverhead = ((uniqueStationsCount * v.stationMaintenance) + (totalChargersNeeded * v.chargerMaintenance) + ((v.depotDemandChargesMonthly + v.depotLandLeaseMonthly) * 12)) * multI;
         }
 
-        const totalYearlyExpenses = yearEMI + yearFuelOrEnergy + yearMaint + yearIns + yearWages + yearTolls + yearTyres + yearBatteryCost + yearInfraOverhead;
+        const totalYearlyExpenses = yearEMI + yearFuelOrEnergy + yearMaint + yearIns + yearWages + yearTolls + yearTyres + yearBatteryCost + yearInfraOverhead + yearMisc;
         npvTCOSum += totalYearlyExpenses * df;
         cumCostTimeline.push(cumCostTimeline[cumCostTimeline.length - 1] + totalYearlyExpenses);
 
@@ -621,6 +626,7 @@ export default function ComprehensiveTCOCalculator() {
         breakdown.tyres += yearTyres * df;
         breakdown.batteryReplacements += yearBatteryCost * df;
         breakdown.infraMaintenance += yearInfraOverhead * df;
+        breakdown.misc += yearMisc * df;
       }
 
       const npvResidualValue = v.purchasePrice * (v.residualPct / 100) * fleetSizeRequired * (1 / Math.pow(1 + dfRate, years));
@@ -1023,6 +1029,10 @@ export default function ComprehensiveTCOCalculator() {
                 <Field label="Driver Monthly Base Salary" value={v.driverSalaryMonthly} onChange={(val) => updateVehicleProp(v.id, "driverSalaryMonthly", val)} suffix="₹" step={1000} />
                 <Field label="Toll Overhead Per Trip" value={v.tollCostPerTrip} onChange={(val) => updateVehicleProp(v.id, "tollCostPerTrip", val)} suffix="₹" step={250} />
 
+                <div className="section-tag">Miscellaneous Expenses</div>
+                <Field label="Misc Cost Per Month" value={v.miscCostPerMonth} onChange={(val) => updateVehicleProp(v.id, "miscCostPerMonth", val)} suffix="₹/mo" step={500} />
+                <TextField label="Expense Notes" value={v.miscCostNotes} onChange={(val) => updateVehicleProp(v.id, "miscCostNotes", val)} placeholder="e.g. permits, parking..." />
+
                 <div className="section-tag">Downtime allocations</div>
                 {v.type === "diesel" && (
                   <Field label="Route En-route Utilization (Driving %)" value={v.utilizationPct} onChange={(val) => updateVehicleProp(v.id, "utilizationPct", val)} suffix="%" step={1} min={1} max={100} />
@@ -1320,6 +1330,7 @@ export default function ComprehensiveTCOCalculator() {
                   { category: "EMI Debt Amortization", ...results.computedVehicles.reduce((acc, v) => ({ ...acc, [v.name]: v.breakdown.emi }), {}) },
                   { category: "Maintenance & Ins", ...results.computedVehicles.reduce((acc, v) => ({ ...acc, [v.name]: v.breakdown.maintenance }), {}) },
                   { category: "Staff Base Salaries", ...results.computedVehicles.reduce((acc, v) => ({ ...acc, [v.name]: v.breakdown.wages }), {}) },
+                  { category: "Misc Overheads", ...results.computedVehicles.reduce((acc, v) => ({ ...acc, [v.name]: v.breakdown.misc }), {}) },
                   { category: "Road Tolls & Tyres", ...results.computedVehicles.reduce((acc, v) => ({ ...acc, [v.name]: v.breakdown.tolls + v.breakdown.tyres }), {}) },
                   { category: "Battery pack swaps", ...results.computedVehicles.reduce((acc, v) => ({ ...acc, [v.name]: v.breakdown.batteryReplacements }), {}) },
                   { category: "Depot Leases & Upkeep", ...results.computedVehicles.reduce((acc, v) => ({ ...acc, [v.name]: v.breakdown.infraMaintenance }), {}) }
@@ -1364,6 +1375,24 @@ function Field({ label, value, onChange, suffix, step = 1, min = 0, max }) {
   );
 }
 
+// Added new TextField component for text/string inputs like the "Notes" field
+function TextField({ label, value, onChange, placeholder }) {
+  return (
+    <div className="field">
+      <span className="field-label">{label}</span>
+      <div className="field-input" style={{ flex: 1.2 }}>
+        <input 
+          type="text" 
+          value={value || ""} 
+          placeholder={placeholder} 
+          onChange={(e) => onChange(e.target.value)} 
+          style={{ width: "100%", textAlign: "left" }} 
+        />
+      </div>
+    </div>
+  );
+}
+
 function inr(value) {
   if (value === null || value === undefined || isNaN(value)) return "₹0";
   return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(value);
@@ -1378,4 +1407,3 @@ function inrCompact(value) {
   if (abs >= 1e3) return `${sign}₹${(abs / 1e3).toFixed(1)} K`;
   return `${sign}₹${abs.toFixed(0)}`;
 }
-
