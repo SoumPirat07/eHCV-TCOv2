@@ -428,7 +428,11 @@ export default function ComprehensiveTCOCalculator() {
 
         routeSegments.forEach((seg, idx) => {
           const segVehicleEconomy = segmentEconomies[idx];
-          const socPctPerKm = 100 / (segVehicleEconomy * plannedEffectiveCapacity);
+          
+          // FIX: Clamp values so division by zero isn't possible if user clears input box
+          const safeEconomy = Math.max(0.01, segVehicleEconomy);
+          const safeCapacity = Math.max(1, plannedEffectiveCapacity);
+          const socPctPerKm = 100 / (safeEconomy * safeCapacity);
           
           let remainingSegDistance = seg.distance;
           let distanceIntoSegment = 0;
@@ -438,7 +442,7 @@ export default function ComprehensiveTCOCalculator() {
             const maxDistanceBeforeCharge = socPctPerKm > 0 ? Math.max(0, availableSoC / socPctPerKm) : remainingSegDistance;
 
             if (maxDistanceBeforeCharge >= remainingSegDistance) {
-              const energyConsumed = remainingSegDistance / segVehicleEconomy;
+              const energyConsumed = remainingSegDistance / safeEconomy;
               currentEnergySinceCharge += energyConsumed;
               currentSoC -= remainingSegDistance * socPctPerKm;
               cumulativeDistance += remainingSegDistance;
@@ -446,7 +450,14 @@ export default function ComprehensiveTCOCalculator() {
               remainingSegDistance = 0;
             } else {
               const travelDist = maxDistanceBeforeCharge;
-              const energyConsumed = travelDist / segVehicleEconomy;
+              
+              // FIX: Emergency failsafe breaker to completely prevent infinite loops
+              if (travelDist <= 0.0001) {
+                remainingSegDistance = 0; 
+                break; 
+              }
+
+              const energyConsumed = travelDist / safeEconomy;
               currentEnergySinceCharge += energyConsumed;
               currentSoC -= travelDist * socPctPerKm;
               cumulativeDistance += travelDist;
