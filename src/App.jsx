@@ -1630,4 +1630,4 @@ function inrCompact(value) {
   if (abs >= 1e5) return `${sign}₹${(abs / 1e5).toFixed(2)} L`;
   if (abs >= 1e3) return `${sign}₹${(abs / 1e3).toFixed(1)} K`;
   return `${sign}₹${abs.toFixed(0)}`;
-}
+} 
