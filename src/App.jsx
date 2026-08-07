@@ -139,7 +139,7 @@ const generateDefaultStretches = () => {
 const DEFAULT_ROUTE = [
   { id: "1", from: "A", to: "B", distance: 500, avgSpeed: 45, stretches: generateDefaultStretches(), hasDepotAtTo: true, payloadByVehicle: { "v-diesel-1": 35, "v-bev-1": 32 } },
   { id: "2", from: "B", to: "C", distance: 50, avgSpeed: 40, stretches: generateDefaultStretches(), hasDepotAtTo: true, payloadByVehicle: { "v-diesel-1": 0, "v-bev-1": 0 } },
-  { id: "3", from: "C", to: "A", distance: 500, avgSpeed: 45, stretches: generateDefaultStretches(), hasDepotAtTo: true, payloadByVehicle: { "v-diesel-1": 35, "v-bev-1": 32 } }
+  { id: "3", from: "C", to: "A", distance: 550, avgSpeed: 45, stretches: generateDefaultStretches(), hasDepotAtTo: true, payloadByVehicle: { "v-diesel-1": 35, "v-bev-1": 32 } }
 ];
 
 const VEHICLE_COLORS = ["#21bfa9", "#e29532", "#b16af0", "#38bdf8", "#ec4899", "#10b981"];
@@ -178,11 +178,11 @@ const INITIAL_VEHICLES = [
     tollCostPerTrip: 3500,
     tyresFront: 2, tyreCostFront: 21000, tyreLifeFront: 45000,
     tyresRear: 4, tyreCostRear: 22000, tyreLifeRear: 50000,
-    tyresTrailer: 12, tyreCostTrailer: 22000, tyreLifeTrailer: 60000,
+    tyresTrailer: 12, tyreCostTrailer: 22000, tyreLifeTrailer: 65000,
     utilizationPct: 40, 
     scheduledDowntimeDays: 12,
     unscheduledDowntimeHrs: 48,
-    miscCostPerMonth: 50000,
+    miscCostPerMonth: 10000,
     miscCostNotes: "Chai/Paani",
   },
   {
@@ -198,7 +198,7 @@ const INITIAL_VEHICLES = [
     baseLoadedEconomy: 0.4,  
     batteryCapacity: 282,
     batteryReplacementCost: 4000000,
-    batteryDegradationPerCycle: 0.004,
+    batteryDegradationPerCycle: 0.006,
     batterySOHThreshold: 75,
     maintCostPerKm: 2.5,
     insuranceRatePct: 1.5,
@@ -215,20 +215,20 @@ const INITIAL_VEHICLES = [
     tyresRear: 4, tyreCostRear: 22000, tyreLifeRear: 50000,
     tyresTrailer: 12, tyreCostTrailer: 22000, tyreLifeTrailer: 65000,
     scheduledDowntimeDays: 12,
-    unscheduledDowntimeHrs: 80,
+    unscheduledDowntimeHrs: 100,
     safeSoCThreshold: 15,
     stationCost: 5000000,
     stationMaintenance: 120000,
     chargerCost: 1500000,
     chargerMaintenance: 50000,
     infrastructureTaxCredit: 0,
-    chargeSpeedKW: 150, 
-    chargingTimeMarginPct: 10, 
+    chargeSpeedKW: 200, 
+    chargingTimeMarginPct: 186, 
     electricityRate: 5,
     depotLandLeaseMonthly: 120000,
     depotDemandChargesMonthly: 80000,
     useDynamicSOHLimit: true,
-    miscCostPerMonth: 50000,
+    miscCostPerMonth: 10000,
     miscCostNotes: "Chai/Paani",
   }
 ];
@@ -714,7 +714,7 @@ export default function ComprehensiveTCOCalculator() {
       tyresTrailer: 12, tyreCostTrailer: 22000, tyreLifeTrailer: 80000,
       scheduledDowntimeDays: 12,
       unscheduledDowntimeHrs: 120,
-      miscCostPerMonth: 50000,
+      miscCostPerMonth: 10000,
       miscCostNotes: "Chai/Paani",
     };
 
@@ -724,7 +724,7 @@ export default function ComprehensiveTCOCalculator() {
     } else {
       baseDefault.batteryCapacity = 500;
       baseDefault.batteryReplacementCost = 3800000;
-      baseDefault.batteryDegradationPerCycle = 0.004;
+      baseDefault.batteryDegradationPerCycle = 0.006;
       baseDefault.batterySOHThreshold = 75;
       baseDefault.safeSoCThreshold = 20;
       baseDefault.stationCost = 3500000;
