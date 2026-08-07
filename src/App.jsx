@@ -112,6 +112,14 @@ function computeWeightedMultiplier(stretches, payload, vehicleType = "diesel") {
   return weightedMultiplier * normalizeFactor;
 }
 
+function getSegPayload(seg, vehicleId) {
+  return (seg.payloadByVehicle && seg.payloadByVehicle[vehicleId]) || 0;
+}
+
+function getPayloadCap(v) {
+  return Math.max(0, v.gvwr - v.tractorWeight - v.trailerWeight) / 1000;
+}
+
 const generateDefaultStretches = () => {
   const stretches = [];
   ROAD_TYPES.forEach((road) => {
@@ -129,18 +137,15 @@ const generateDefaultStretches = () => {
 };
 
 const DEFAULT_ROUTE = [
-  { id: "1", from: "A", to: "B", distance: 500, payload: 35, avgSpeed: 45, stretches: generateDefaultStretches(), hasDepotAtTo: true },
-  { id: "2", from: "B", to: "C", distance: 50, payload: 0, avgSpeed: 40, stretches: generateDefaultStretches(), hasDepotAtTo: true },
-  { id: "3", from: "C", to: "A", distance: 500, payload: 35, avgSpeed: 45, stretches: generateDefaultStretches(), hasDepotAtTo: true }
+  { id: "1", from: "A", to: "B", distance: 500, avgSpeed: 45, stretches: generateDefaultStretches(), hasDepotAtTo: true, payloadByVehicle: { "v-diesel-1": 35, "v-bev-1": 32 } },
+  { id: "2", from: "B", to: "C", distance: 50, avgSpeed: 40, stretches: generateDefaultStretches(), hasDepotAtTo: true, payloadByVehicle: { "v-diesel-1": 0, "v-bev-1": 0 } },
+  { id: "3", from: "C", to: "A", distance: 500, avgSpeed: 45, stretches: generateDefaultStretches(), hasDepotAtTo: true, payloadByVehicle: { "v-diesel-1": 35, "v-bev-1": 32 } }
 ];
 
 const VEHICLE_COLORS = ["#21bfa9", "#e29532", "#b16af0", "#38bdf8", "#ec4899", "#10b981"];
-// Colors are assigned by TYPE first (teal family = electric, orange family = diesel,
-// matching the buttons/badges/cards throughout the app), then shaded by position so
-// multiple vehicles of the same type stay distinguishable without breaking the
-// type-color convention.
 const EV_SHADES = ["#21bfa9", "#38bdf8", "#10b981", "#5eead4"];
 const DIESEL_SHADES = ["#e29532", "#f59e0b", "#ec4899", "#fb923c"];
+
 function colorForVehicle(v, allVehicles) {
   const sameTypeIdx = Math.max(0, allVehicles.filter((x) => x.type === v.type).findIndex((x) => x.id === v.id));
   const palette = v.type === "electric" ? EV_SHADES : DIESEL_SHADES;
@@ -163,6 +168,8 @@ const INITIAL_VEHICLES = [
     maintCostPerKm: 2.5,
     insuranceRatePct: 1.5,
     residualPct: 10,
+    allowOverloading: false,
+    overloadPenaltyPctPerTonne: 2.0,
     financing: "emi",
     downPaymentPct: 20,
     interestRate: 10,
@@ -196,6 +203,8 @@ const INITIAL_VEHICLES = [
     maintCostPerKm: 2.5,
     insuranceRatePct: 1.5,
     residualPct: 8,
+    allowOverloading: false,
+    overloadPenaltyPctPerTonne: 2.0,
     financing: "emi",
     downPaymentPct: 20,
     interestRate: 10.0,
@@ -213,8 +222,8 @@ const INITIAL_VEHICLES = [
     chargerCost: 1500000,
     chargerMaintenance: 50000,
     infrastructureTaxCredit: 0,
-    chargeSpeedKW: 200, 
-    chargingTimeMarginPct: 200, 
+    chargeSpeedKW: 150, 
+    chargingTimeMarginPct: 10, 
     electricityRate: 5,
     depotLandLeaseMonthly: 120000,
     depotDemandChargesMonthly: 80000,
@@ -226,10 +235,6 @@ const INITIAL_VEHICLES = [
 
 // ---------------------------------------------------------------------------
 // CORE PER-VEHICLE ENGINE
-// Extracted into a standalone pure function so it can be reused both by the
-// main comparison run AND by the charging-network optimizer (which needs to
-// re-run this same math dozens/hundreds of times against candidate route
-// configurations without touching component state).
 // ---------------------------------------------------------------------------
 function computeVehicleMetrics(v, routeSegments, cfg) {
   const {
@@ -237,7 +242,7 @@ function computeVehicleMetrics(v, routeSegments, cfg) {
     monthlyCargoVolume, workingDaysPerMonth, dailyOperatingLimitHrs, loadingUnloadingTimePerTrip
   } = cfg;
 
-  const payloadCap = Math.max(0, v.gvwr - v.tractorWeight - v.trailerWeight) / 1000;
+  const payloadCap = getPayloadCap(v);
   let tripMaxPayload = 0;
   let totalTripDistance = 0;
   let totalTripDrivingHrs = 0;
@@ -252,13 +257,28 @@ function computeVehicleMetrics(v, routeSegments, cfg) {
     const segHrs = seg.distance / Math.max(1, seg.avgSpeed);
     totalTripDrivingHrs += segHrs;
     segmentDrivingHours.push(segHrs);
-    if (seg.payload > tripMaxPayload) tripMaxPayload = seg.payload;
-    if (seg.payload > payloadCap) segmentOverloads.push({ segmentIdx: idx + 1, payload: seg.payload, cap: payloadCap });
+    
+    const segPayload = getSegPayload(seg, v.id);
+    if (segPayload > tripMaxPayload) tripMaxPayload = segPayload;
+    
+    // Only flag as a violation if overloading is disabled
+    if (segPayload > payloadCap && !v.allowOverloading) {
+      segmentOverloads.push({ segmentIdx: idx + 1, payload: segPayload, cap: payloadCap, from: seg.from, to: seg.to });
+    }
 
-    const cappedPayload = Math.min(seg.payload, payloadCap);
-    const payloadRatio = payloadCap > 0 ? cappedPayload / payloadCap : 0;
+    const cappedPayload = v.allowOverloading ? segPayload : Math.min(segPayload, payloadCap);
+    const standardPayload = Math.min(cappedPayload, payloadCap);
+    const payloadRatio = payloadCap > 0 ? standardPayload / payloadCap : 0;
 
-    const baseEconomy = v.baseUnloadedEconomy - (v.baseUnloadedEconomy - v.baseLoadedEconomy) * payloadRatio;
+    let baseEconomy = v.baseUnloadedEconomy - (v.baseUnloadedEconomy - v.baseLoadedEconomy) * payloadRatio;
+    
+    // Apply efficiency drop for overloading
+    const overloadTonnes = Math.max(0, cappedPayload - payloadCap);
+    if (overloadTonnes > 0 && v.overloadPenaltyPctPerTonne) {
+      const penaltyFactor = 1 - (overloadTonnes * (v.overloadPenaltyPctPerTonne / 100));
+      baseEconomy = baseEconomy * Math.max(0.1, penaltyFactor); 
+    }
+
     const segWeightedMultiplier = computeWeightedMultiplier(seg.stretches, cappedPayload, v.type);
     const segVehicleEconomy = baseEconomy * segWeightedMultiplier;
 
@@ -348,7 +368,6 @@ function computeVehicleMetrics(v, routeSegments, cfg) {
           remainingSegDistance = 0;
         } else {
           const travelDist = maxDistanceBeforeCharge;
-
           if (travelDist <= 0.0001) { remainingSegDistance = 0; break; }
 
           const energyConsumed = travelDist / safeEconomy;
@@ -385,10 +404,6 @@ function computeVehicleMetrics(v, routeSegments, cfg) {
   const totalAnnualFixedDowntimeHrs = (v.scheduledDowntimeDays * 24) + v.unscheduledDowntimeHrs;
   const fullTurnaroundCycleHrs = totalTripDrivingHrs + loadingUnloadingTimePerTrip + chargingDowntimeHrs + dieselRestDowntimeHrs;
 
-  // Utilization %: share of the full trip turnaround that is actually spent
-  // driving (as opposed to loading/unloading, charging, or resting). This is
-  // an INPUT for diesel vehicles, but for EVs it's a downstream result of the
-  // charging cadence, so it's computed here from the simulated cycle.
   const utilizationPctComputed = fullTurnaroundCycleHrs > 0
     ? (totalTripDrivingHrs / fullTurnaroundCycleHrs) * 100
     : 0;
@@ -396,7 +411,9 @@ function computeVehicleMetrics(v, routeSegments, cfg) {
   const totalOperatingHoursAvailableYear = (workingDaysPerMonth * 12 * dailyOperatingLimitHrs) - totalAnnualFixedDowntimeHrs;
   const tripsPerYearPerVehicle = fullTurnaroundCycleHrs > 0 ? totalOperatingHoursAvailableYear / fullTurnaroundCycleHrs : 0;
 
-  const annualCargoThroughputPerVehicle = tripsPerYearPerVehicle * Math.min(tripMaxPayload, payloadCap);
+  // Utilize the overloaded payload correctly for fleet sizing calculations
+  const maxCarriedPayload = v.allowOverloading ? tripMaxPayload : Math.min(tripMaxPayload, payloadCap);
+  const annualCargoThroughputPerVehicle = tripsPerYearPerVehicle * Math.max(0.1, maxCarriedPayload);
   const fleetSizeRequired = Math.max(1, Math.ceil((monthlyCargoVolume * 12) / Math.max(1, annualCargoThroughputPerVehicle)));
 
   const totalTripsAcrossFleetYear = tripsPerYearPerVehicle * fleetSizeRequired;
@@ -535,18 +552,6 @@ function computeVehicleMetrics(v, routeSegments, cfg) {
   const operationalRangeAtStart = v.type === "electric" ? v.batteryCapacity * ((100 - v.safeSoCThreshold) / 100) * avgRouteEconomy : 0;
   const operationalRangeAtSOHLimit = v.type === "electric" ? operationalRangeAtStart * (resolvedSOHReplacementLimit / 100) : 0;
 
-  // Per-segment cost. Two figures per segment:
-  //  - operatingCostPerKm: fuel-or-energy + maintenance + tyres — the part that
-  //    actually scales with THIS leg's distance/economy.
-  //  - fullCostPerKm: operating cost PLUS a time-allocated share of every fixed/
-  //    fleet-level cost (capital, EMI, insurance, wages, tolls, infra upkeep,
-  //    battery swaps, residuals). Fixed costs are amortized per trip, then split
-  //    across segments by each segment's share of one loop's driving time — a
-  //    segment that ties up the truck (and driver, and capital) for longer
-  //    carries a proportionally larger share, regardless of how cheap its fuel
-  //    is. Summed across a full loop and multiplied by lifetime trips, this
-  //    reconciles closely (not exactly, due to NPV discounting) with the
-  //    lifecycle total shown as "Total" in the table.
   const tyreCostPerKmFlat = (v.tyresFront * v.tyreCostFront / Math.max(1, v.tyreLifeFront)) +
     (v.tyresRear * v.tyreCostRear / Math.max(1, v.tyreLifeRear)) +
     (v.tyresTrailer * v.tyreCostTrailer / Math.max(1, v.tyreLifeTrailer));
@@ -567,7 +572,7 @@ function computeVehicleMetrics(v, routeSegments, cfg) {
     const allocatedFixedCost = fixedCostPerTrip * timeShare;
     const fullCostPerKm = operatingCostPerKm + (allocatedFixedCost / Math.max(0.01, seg.distance));
 
-    const cappedPayload = Math.min(seg.payload, payloadCap);
+    const cappedPayload = v.allowOverloading ? getSegPayload(seg, v.id) : Math.min(getSegPayload(seg, v.id), payloadCap);
     const costPerTonneKmSeg = cappedPayload > 0 ? fullCostPerKm / cappedPayload : null;
     const operatingCostPerTonneKmSeg = cappedPayload > 0 ? operatingCostPerKm / cappedPayload : null;
     return {
@@ -617,12 +622,6 @@ function computeVehicleMetrics(v, routeSegments, cfg) {
   };
 }
 
-// Brute-force search over depot-charger placement (the "hasDepotAtTo" flag
-// on each route segment) to find the combination that minimizes NPV TCO for
-// a given EV. The road/traffic mix and distances are treated as fixed
-// (they describe the real route); the decision variable is only WHERE to
-// site terminal depot chargers, since that's what actually drives infra
-// capex/opex trade-offs. Capped at 12 segments (4096 combos) to stay fast.
 function findOptimalChargingNetwork(v, routeSegments, cfg) {
   const n = routeSegments.length;
   if (v.type !== "electric" || n === 0 || n > 12) return null;
@@ -678,9 +677,13 @@ export default function ComprehensiveTCOCalculator() {
   const [routeSegments, setRouteSegments] = useState(DEFAULT_ROUTE);
   const [expandedSegmentId, setExpandedSegmentId] = useState(null);
   const [vehicles, setVehicles] = useState(INITIAL_VEHICLES);
+  
+  // Track whether users are entering % or Tonnes for each vehicle in the payload drawer
+  const [payloadModes, setPayloadModes] = useState({});
 
   const [optimizerResults, setOptimizerResults] = useState({});
   const [optimizerRunning, setOptimizerRunning] = useState(null);
+  const [payloadWarnings, setPayloadWarnings] = useState({});
 
   const handleAddVehicle = (type) => {
     const nextId = `v-custom-${Date.now()}`;
@@ -698,6 +701,8 @@ export default function ComprehensiveTCOCalculator() {
       maintCostPerKm: type === "diesel" ? 3.6 : 2.4,
       insuranceRatePct: 2.5,
       residualPct: type === "diesel" ? 12 : 10,
+      allowOverloading: false,
+      overloadPenaltyPctPerTonne: 2.0,
       financing: "emi",
       downPaymentPct: 15,
       interestRate: 9.5,
@@ -736,11 +741,27 @@ export default function ComprehensiveTCOCalculator() {
     }
 
     setVehicles([...vehicles, baseDefault]);
+
+    const newCap = getPayloadCap(baseDefault);
+    const sameTypeSibling = vehicles.find((vv) => vv.type === type);
+    setRouteSegments(routeSegments.map((seg) => {
+      const siblingVal = sameTypeSibling ? getSegPayload(seg, sameTypeSibling.id) : null;
+      const defaultVal = siblingVal !== null ? Math.min(siblingVal, newCap) : Math.round(newCap * 0.85 * 10) / 10;
+      return { ...seg, payloadByVehicle: { ...seg.payloadByVehicle, [nextId]: defaultVal } };
+    }));
   };
 
   const handleRemoveVehicle = (id) => {
     if (vehicles.length <= 1) return;
     setVehicles(vehicles.filter((v) => v.id !== id));
+    setRouteSegments(routeSegments.map((seg) => {
+      const { [id]: _removed, ...rest } = seg.payloadByVehicle || {};
+      return { ...seg, payloadByVehicle: rest };
+    }));
+    setOptimizerResults((prev) => {
+      const { [id]: _removed, ...rest } = prev;
+      return rest;
+    });
   };
 
   const updateVehicleProp = (id, prop, val) => {
@@ -750,15 +771,17 @@ export default function ComprehensiveTCOCalculator() {
   const handleAddSegment = () => {
     const nextChar = String.fromCharCode(65 + routeSegments.length);
     const nextCharTo = String.fromCharCode(66 + routeSegments.length);
+    const payloadByVehicle = {};
+    vehicles.forEach((v) => { payloadByVehicle[v.id] = Math.round(getPayloadCap(v) * 0.85 * 10) / 10; });
     const newSeg = {
       id: `s-${Date.now()}`,
       from: `Point ${nextChar}`,
       to: `Point ${nextCharTo}`,
       distance: 120,
-      payload: 30,
       avgSpeed: 55,
       stretches: generateDefaultStretches(),
-      hasDepotAtTo: false
+      hasDepotAtTo: false,
+      payloadByVehicle
     };
     setRouteSegments([...routeSegments, newSeg]);
   };
@@ -771,6 +794,23 @@ export default function ComprehensiveTCOCalculator() {
   const updateSegmentProp = (segId, prop, val) => {
     setRouteSegments(routeSegments.map((s) => (s.id === segId ? { ...s, [prop]: val } : s)));
   };
+
+  const updateSegmentVehiclePayload = (segId, vehicleId, rawVal, cap, allowOverload) => {
+    const clamped = allowOverload ? Math.max(0, rawVal) : Math.max(0, Math.min(rawVal, cap));
+    setRouteSegments(routeSegments.map((s) => (
+      s.id === segId ? { ...s, payloadByVehicle: { ...s.payloadByVehicle, [vehicleId]: clamped } } : s
+    )));
+    
+    const warnKey = `${segId}_${vehicleId}`;
+    if (rawVal > cap && !allowOverload) {
+      setPayloadWarnings((prev) => ({ ...prev, [warnKey]: true }));
+      setTimeout(() => setPayloadWarnings((prev) => {
+        const { [warnKey]: _removed, ...rest } = prev;
+        return rest;
+      }), 3000);
+    }
+  };
+
 
   const updateStretchPercentage = (segId, roadType, traffic, val) => {
     setRouteSegments(
@@ -788,13 +828,8 @@ export default function ComprehensiveTCOCalculator() {
   const results = useMemo(() => {
     const years = Math.max(1, Math.round(analysisPeriod));
     const cfg = {
-      years,
-      dfRate: discountRate / 100,
-      escGen: escGeneral / 100,
-      escF: escFuel / 100,
-      escE: escElectricity / 100,
-      escW: escWages / 100,
-      escI: escInfrastructure / 100,
+      years, dfRate: discountRate / 100, escGen: escGeneral / 100, escF: escFuel / 100,
+      escE: escElectricity / 100, escW: escWages / 100, escI: escInfrastructure / 100,
       monthlyCargoVolume, workingDaysPerMonth, dailyOperatingLimitHrs, loadingUnloadingTimePerTrip
     };
 
@@ -809,17 +844,12 @@ export default function ComprehensiveTCOCalculator() {
       chartData.push(row);
     }
 
-    // Breakeven: compare the cheapest-upfront diesel vs cheapest-upfront EV,
-    // if both types are present in the current fleet mix.
     const firstDiesel = computedVehicles.find((v) => v.type === "diesel");
     const firstElectric = computedVehicles.find((v) => v.type === "electric");
     const breakevenYear = (firstDiesel && firstElectric)
       ? computeBreakeven(chartData, firstDiesel.name, firstElectric.name)
       : null;
 
-    // Fleet comparison radar: normalize each vehicle against the best performer
-    // on each metric (best = 100, others scaled proportionally). "Inverse" means
-    // lower raw value is better (cost, time), so it's scored as best/value*100.
     const radarDims = [
       { key: "npvTCOSum", label: "Lower TCO", inverse: true },
       { key: "costPerTonneKm", label: "Lower ₹/Tonne-km", inverse: true },
@@ -845,8 +875,6 @@ export default function ComprehensiveTCOCalculator() {
     const v = vehicles.find((vv) => vv.id === vehicleId);
     if (!v) return;
     setOptimizerRunning(vehicleId);
-    // Runs synchronously - route segment counts are small enough that this
-    // completes near-instantly, but we still show a running state for clarity.
     const best = findOptimalChargingNetwork(v, routeSegments, results.cfg);
     setOptimizerResults((prev) => ({ ...prev, [vehicleId]: best }));
     setOptimizerRunning(null);
@@ -854,7 +882,7 @@ export default function ComprehensiveTCOCalculator() {
 
   const handleApplyOptimalNetwork = (vehicleId) => {
     const best = optimizerResults[vehicleId];
-    if (!best || best.depotFlags.length !== routeSegments.length) return; // stale result, re-run first
+    if (!best || best.depotFlags.length !== routeSegments.length) return; 
     setRouteSegments(routeSegments.map((s, i) => ({ ...s, hasDepotAtTo: best.depotFlags[i] })));
   };
 
@@ -871,12 +899,6 @@ export default function ComprehensiveTCOCalculator() {
           transition: all 0.2s ease-in-out; -webkit-font-smoothing: antialiased;
         }
         .wrap * { box-sizing: border-box; }
-        /* Defensive reset: some host pages ship global CSS (e.g. a default Vite
-           index.css) that sets an explicit text color on body/button/a with equal
-           or higher specificity than our theme rules, which can leave text stuck
-           white-on-white in light mode. This low-priority rule forces every
-           descendant back to the theme's text color unless something more specific
-           below (inline styles, badges, KPI value colors, etc.) overrides it. */
         .wrap, .wrap * { color: var(--text); }
         .wrap.dark-theme { --bg: #090b0c; --panel: #131719; --panel-alt: #1a2022; --border: #262f32; --text: #f3f4f6; --text-dim: #9ca3af; --bev: #21bfa9; --diesel: #e29532; --good: #10b981; --bad: #ef4444; --input-bg: #0d0f10; }
         .wrap.light-theme { --bg: #f9fafb; --panel: #ffffff; --panel-alt: #f3f4f6; --border: #e5e7eb; --text: #111827; --text-dim: #6b7280; --bev: #129382; --diesel: #be7a21; --good: #059669; --bad: #dc2626; --input-bg: #f9fafb; }
@@ -1001,7 +1023,7 @@ export default function ComprehensiveTCOCalculator() {
                   <th>From Node</th>
                   <th>To Node</th>
                   <th>Distance (km)</th>
-                  <th>Cargo Payload (T)</th>
+                  <th>Payload (per vehicle)</th>
                   <th>Avg Speed (km/h)</th>
                   <th style={{ textAlign: "center" }}>Depot Charger at Target?</th>
                   <th>Custom Duty Cycle</th>
@@ -1017,7 +1039,21 @@ export default function ComprehensiveTCOCalculator() {
                         <td><input type="text" value={seg.from} onChange={(e) => updateSegmentProp(seg.id, "from", e.target.value)} /></td>
                         <td><input type="text" value={seg.to} onChange={(e) => updateSegmentProp(seg.id, "to", e.target.value)} /></td>
                         <td><input type="number" value={seg.distance} onChange={(e) => updateSegmentProp(seg.id, "distance", parseFloat(e.target.value) || 0)} /></td>
-                        <td><input type="number" value={seg.payload} onChange={(e) => updateSegmentProp(seg.id, "payload", parseFloat(e.target.value) || 0)} /></td>
+                        <td>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                            {vehicles.map((v) => {
+                              const val = getSegPayload(seg, v.id);
+                              const cap = getPayloadCap(v);
+                              const isOver = val > cap;
+                              return (
+                                <span key={v.id} className="num" style={{ fontSize: "11px", color: isOver && !v.allowOverloading ? "var(--bad)" : "var(--text-dim)", whiteSpace: "nowrap" }}>
+                                  <span style={{ display: "inline-block", width: "7px", height: "7px", borderRadius: "50%", background: colorForVehicle(v, vehicles), marginRight: "5px" }} />
+                                  {val.toFixed(1)}T {isOver && v.allowOverloading ? "(Over)" : ""}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        </td>
                         <td><input type="number" value={seg.avgSpeed} onChange={(e) => updateSegmentProp(seg.id, "avgSpeed", parseFloat(e.target.value) || 0)} /></td>
                         <td style={{ textAlign: "center" }}>
                           <input type="checkbox" checked={seg.hasDepotAtTo} onChange={(e) => updateSegmentProp(seg.id, "hasDepotAtTo", e.target.checked)} style={{ width: "16px", height: "16px", accentColor: "var(--bev)", cursor: "pointer" }} />
@@ -1036,29 +1072,83 @@ export default function ComprehensiveTCOCalculator() {
                         <tr>
                           <td colSpan="8">
                             <div className="stretch-drawer">
+                              <div style={{ marginBottom: "16px" }}>
+                                <span style={{ fontWeight: 600, fontSize: "13px", display: "block", marginBottom: "10px" }}>Cargo Payload per Vehicle</span>
+                                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                                  {vehicles.map((v) => {
+                                    const mode = payloadModes[v.id] || "T";
+                                    const cap = getPayloadCap(v);
+                                    const currentVal = getSegPayload(seg, v.id);
+                                    const warnKey = `${seg.id}_${v.id}`;
+                                    const isWarning = !!payloadWarnings[warnKey];
+                                    const isOverloaded = currentVal > cap;
+                                    
+                                    // Use capped value when fetching the multiplier (matrix tops out at 60 anyways)
+                                    const multiplier = computeWeightedMultiplier(seg.stretches, v.allowOverloading ? currentVal : Math.min(currentVal, cap), v.type);
+
+                                    return (
+                                      <div key={v.id} style={{ background: "var(--panel)", border: `1px solid ${isWarning && !v.allowOverloading ? "var(--bad)" : "var(--border)"}`, borderRadius: "8px", padding: "10px 12px" }}>
+                                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", flexWrap: "wrap" }}>
+                                          <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: "160px" }}>
+                                            {v.type === "electric" ? <Zap size={13} color="var(--bev)" /> : <Fuel size={13} color="var(--diesel)" />}
+                                            <span style={{ fontSize: "12.5px", fontWeight: 600 }}>{v.name}</span>
+                                          </div>
+                                          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                            <span style={{ fontSize: "10.5px", color: "var(--text-dim)" }}>Max {cap.toFixed(1)}T</span>
+                                            
+                                            <div className="field-input" style={{ width: "fit-content" }}>
+                                              <input
+                                                type="number"
+                                                value={mode === "%" ? (cap > 0 ? (currentVal / cap) * 100 : 0).toFixed(1) : currentVal}
+                                                max={v.allowOverloading ? undefined : (mode === "%" ? 100 : cap)}
+                                                min={0}
+                                                step={mode === "%" ? 1 : 0.5}
+                                                onChange={(e) => {
+                                                  const raw = parseFloat(e.target.value) || 0;
+                                                  const newT = mode === "%" ? (raw / 100) * cap : raw;
+                                                  updateSegmentVehiclePayload(seg.id, v.id, newT, cap, v.allowOverloading);
+                                                }}
+                                                style={{ width: "70px", padding: "6px" }}
+                                              />
+                                              <span className="field-suffix" style={{ paddingRight: 6 }}>{mode === "%" ? "%" : "T"}</span>
+                                            </div>
+
+                                            <button 
+                                              className="expand-btn" 
+                                              style={{ padding: "4px 8px", fontSize: "10px" }} 
+                                              onClick={() => setPayloadModes(p => ({...p, [v.id]: mode === "%" ? "T" : "%"}))}
+                                            >
+                                              {mode === "%" ? "Use Tonnes" : "Use %"}
+                                            </button>
+
+                                            <span className="num" style={{ fontSize: "10.5px", color: "var(--text-dim)", marginLeft: 6 }}>×{multiplier.toFixed(3)}</span>
+                                          </div>
+                                        </div>
+                                        
+                                        {isWarning && !v.allowOverloading && (
+                                          <div style={{ fontSize: "11px", color: "var(--bad)", marginTop: "6px" }}>
+                                            <AlertTriangle size={11} style={{ display: "inline", verticalAlign: "-1px", marginRight: 4 }} />
+                                            Capped at {cap.toFixed(1)}T — Enable "Allow Overloading" in vehicle profile to bypass this limit.
+                                          </div>
+                                        )}
+                                        
+                                        {isOverloaded && v.allowOverloading && (
+                                          <div style={{ fontSize: "11px", color: "var(--diesel)", marginTop: "6px" }}>
+                                            <AlertTriangle size={11} style={{ display: "inline", verticalAlign: "-1px", marginRight: 4 }} />
+                                            Overloaded by {(currentVal - cap).toFixed(1)}T — Base economy is penalized by {((currentVal - cap) * (v.overloadPenaltyPctPerTonne || 0)).toFixed(1)}%.
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
                                 <span style={{ fontWeight: 600, fontSize: "13px" }}>Surface / Traffic Allocation (Target: 100%)</span>
                                 <span className="num badge" style={{ background: activeStretchesSum !== 100 ? "rgba(239, 68, 68, 0.1)" : "rgba(16, 185, 129, 0.1)", color: activeStretchesSum !== 100 ? "var(--bad)" : "var(--good)" }}>
                                   Sum: {activeStretchesSum}%
                                 </span>
-                              </div>
-
-                              <div style={{ display: "inline-flex", alignItems: "center", gap: "16px", background: "var(--panel)", border: "1px solid var(--border)", borderRadius: "6px", padding: "8px 12px", marginBottom: "12px", fontSize: "12px" }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                  <Fuel size={13} color="var(--diesel)" />
-                                  <span style={{ color: "var(--text-dim)" }}>Diesel Route Multiplier:</span>
-                                  <strong className="num" style={{ color: "var(--diesel)" }}>
-                                    {computeWeightedMultiplier(seg.stretches, seg.payload, "diesel").toFixed(3)}x
-                                  </strong>
-                                </div>
-                                <div style={{ width: "1px", height: "16px", background: "var(--border)" }} />
-                                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                  <Zap size={13} color="var(--bev)" />
-                                  <span style={{ color: "var(--text-dim)" }}>EV Route Multiplier:</span>
-                                  <strong className="num" style={{ color: "var(--bev)" }}>
-                                    {computeWeightedMultiplier(seg.stretches, seg.payload, "electric").toFixed(3)}x
-                                  </strong>
-                                </div>
                               </div>
 
                               <div className="stretch-grid">
@@ -1163,6 +1253,15 @@ export default function ComprehensiveTCOCalculator() {
                 <Field label="Trailer Weight" value={v.trailerWeight} onChange={(val) => updateVehicleProp(v.id, "trailerWeight", val)} suffix="kg" step={100} />
                 <Field label="GVWR Limit" value={v.gvwr} onChange={(val) => updateVehicleProp(v.id, "gvwr", val)} suffix="kg" step={500} />
 
+                <div className="section-tag">Cargo & Overloading Constraints</div>
+                <div className="field">
+                  <span className="field-label" style={{ fontWeight: 600 }}>Allow Overloading (Exceed Payload Cap)</span>
+                  <input type="checkbox" checked={!!v.allowOverloading} onChange={(e) => updateVehicleProp(v.id, "allowOverloading", e.target.checked)} style={{ width: "16px", height: "16px", accentColor: "var(--bev)", cursor: "pointer" }} />
+                </div>
+                {v.allowOverloading && (
+                  <Field label="Efficiency Penalty Per Overloaded Tonne" value={v.overloadPenaltyPctPerTonne} onChange={(val) => updateVehicleProp(v.id, "overloadPenaltyPctPerTonne", val)} suffix="%" step={0.5} />
+                )}
+
                 <div className="section-tag">Efficiency Parameters</div>
                 <Field label="Unloaded Base Economy" value={v.baseUnloadedEconomy} onChange={(val) => updateVehicleProp(v.id, "baseUnloadedEconomy", val)} suffix={v.type === "diesel" ? "km/l" : "km/kWh"} step={0.1} />
                 <Field label="Loaded Base Economy (at Max Payload)" value={v.baseLoadedEconomy} onChange={(val) => updateVehicleProp(v.id, "baseLoadedEconomy", val)} suffix={v.type === "diesel" ? "km/l" : "km/kWh"} step={0.1} />
@@ -1212,25 +1311,30 @@ export default function ComprehensiveTCOCalculator() {
                 </div>
 
                 <div className="section-tag">Overhead & Operating Parameters</div>
-                <Field label="Periodic Maintenance Overhead" value={v.maintCostPerKm} onChange={(val) => updateVehicleProp(v.id, "maintCostPerKm", val)} suffix="₹/km" step={0.1} />
-                <Field label="Annual Insurance Rate" value={v.insuranceRatePct} onChange={(val) => updateVehicleProp(v.id, "insuranceRatePct", val)} suffix="%" step={0.25} />
-                <Field label="Terminal Salvage Value" value={v.residualPct} onChange={(val) => updateVehicleProp(v.id, "residualPct", val)} suffix="%" step={1} />
-                <Field label="Driver Monthly Base Salary" value={v.driverSalaryMonthly} onChange={(val) => updateVehicleProp(v.id, "driverSalaryMonthly", val)} suffix="₹" step={1000} />
-                <Field label="Toll Overhead Per Trip" value={v.tollCostPerTrip} onChange={(val) => updateVehicleProp(v.id, "tollCostPerTrip", val)} suffix="₹" step={250} />
+                <Field label="Periodic Maintenance (per vehicle)" value={v.maintCostPerKm} onChange={(val) => updateVehicleProp(v.id, "maintCostPerKm", val)} suffix="₹/km" step={0.1} />
+                <Field label="Annual Insurance Rate (per vehicle)" value={v.insuranceRatePct} onChange={(val) => updateVehicleProp(v.id, "insuranceRatePct", val)} suffix="%" step={0.25} />
+                <Field label="Terminal Salvage Value (per vehicle)" value={v.residualPct} onChange={(val) => updateVehicleProp(v.id, "residualPct", val)} suffix="%" step={1} />
+                <Field label="Driver Base Salary (per vehicle)" value={v.driverSalaryMonthly} onChange={(val) => updateVehicleProp(v.id, "driverSalaryMonthly", val)} suffix="₹" step={1000} />
+                <Field label="Toll Overhead Per Trip (per vehicle)" value={v.tollCostPerTrip} onChange={(val) => updateVehicleProp(v.id, "tollCostPerTrip", val)} suffix="₹" step={250} />
 
                 <div className="section-tag">Miscellaneous Expenses</div>
-                <Field label="Misc Cost Per Month" value={v.miscCostPerMonth} onChange={(val) => updateVehicleProp(v.id, "miscCostPerMonth", val)} suffix="₹/mo" step={500} />
+                <Field label="Misc Cost Per Month (per vehicle)" value={v.miscCostPerMonth} onChange={(val) => updateVehicleProp(v.id, "miscCostPerMonth", val)} suffix="₹/mo" step={500} />
                 <TextField label="Expense Notes" value={v.miscCostNotes} onChange={(val) => updateVehicleProp(v.id, "miscCostNotes", val)} placeholder="e.g. permits, parking..." />
 
                 <div className="section-tag">Downtime allocations</div>
                 {v.type === "diesel" && (
-                  <Field label="Route En-route Utilization (Driving %)" value={v.utilizationPct} onChange={(val) => updateVehicleProp(v.id, "utilizationPct", val)} suffix="%" step={1} min={1} max={100} />
+                  <>
+                    <Field label="En-route Driving Ratio (excl. load/unload)" value={v.utilizationPct} onChange={(val) => updateVehicleProp(v.id, "utilizationPct", val)} suffix="%" step={1} min={1} max={100} />
+                    <div style={{ fontSize: "10.5px", color: "var(--text-dim)", marginTop: "-8px", marginBottom: "10px" }}>
+                      Governs only the driving-vs-rest split while on route. Load/unload time is added separately below.
+                    </div>
+                  </>
                 )}
-                <Field label="Scheduled Fleet Service" value={v.scheduledDowntimeDays} onChange={(val) => updateVehicleProp(v.id, "scheduledDowntimeDays", val)} suffix="Days/Year" step={1} />
-                <Field label="Unscheduled Fleet Outages" value={v.unscheduledDowntimeHrs} onChange={(val) => updateVehicleProp(v.id, "unscheduledDowntimeHrs", val)} suffix="Hours/Year" step={1} />
-                {v.type === "electric" && currentComputed && (
+                <Field label="Scheduled Service (per vehicle)" value={v.scheduledDowntimeDays} onChange={(val) => updateVehicleProp(v.id, "scheduledDowntimeDays", val)} suffix="Days/Year" step={1} />
+                <Field label="Unscheduled Outages (per vehicle)" value={v.unscheduledDowntimeHrs} onChange={(val) => updateVehicleProp(v.id, "unscheduledDowntimeHrs", val)} suffix="Hours/Year" step={1} />
+                {currentComputed && (
                   <div style={{ fontSize: "11.5px", color: "var(--text-dim)", marginTop: "-4px" }}>
-                    Computed utilization: <strong className="num" style={{ color: "var(--bev)" }}>{currentComputed.utilizationPctComputed.toFixed(1)}%</strong> of turnaround spent driving
+                    Overall utilization (driving ÷ full turnaround, incl. load/unload{v.type === "electric" ? " & charging" : ""}): <strong className="num" style={{ color: "var(--bev)" }}>{currentComputed.utilizationPctComputed.toFixed(1)}%</strong>
                   </div>
                 )}
 
@@ -1382,7 +1486,8 @@ export default function ComprehensiveTCOCalculator() {
                   if (v.segmentOverloads.length === 0) return null;
                   return (
                     <div key={v.id} style={{ fontSize: "12px", color: "var(--text-dim)" }}>
-                      · <strong>{v.name}</strong> payload capacity is capped at <strong>{v.payloadCap.toFixed(1)}T</strong> (Segment cargo limits scaled down internally).
+                      · <strong>{v.name}</strong> payload capacity is capped at <strong>{v.payloadCap.toFixed(1)}T</strong> (Segment cargo limits scaled down internally). 
+                      <em style={{display: 'block', marginTop: 2, color: 'var(--text-dim)'}}>Enable "Allow Overloading" in the vehicle profile to override this constraint.</em>
                     </div>
                   );
                 })}
@@ -1441,8 +1546,6 @@ export default function ComprehensiveTCOCalculator() {
             ))}
           </div>
 
-          {/* Per-segment Cost/Tonne-km - sits right below the KPI totals since it's
-              the breakdown of the "Cost/Tonne-km" figure shown up there. */}
           <div style={{ marginTop: "8px", marginBottom: "24px" }}>
             <h3 style={{ fontSize: "15px", textTransform: "uppercase", marginBottom: "6px", borderBottom: "1px solid var(--border)", paddingBottom: "6px", color: "var(--text)" }}>
               <Route size={15} style={{ display: "inline", verticalAlign: "-2px", marginRight: 6, color: "var(--bev)" }} />
@@ -1495,7 +1598,6 @@ export default function ComprehensiveTCOCalculator() {
             </div>
           </div>
 
-          {/* Sequential SoC Trace details */}
           {results.computedVehicles.some(v => v.type === "electric") && (
             <div style={{ background: "var(--panel-alt)", padding: "18px", borderRadius: "10px", marginBottom: "24px", border: "1px solid var(--border)" }}>
               <div className="kpi-label" style={{ color: "var(--bev)" }}>
@@ -1535,7 +1637,6 @@ export default function ComprehensiveTCOCalculator() {
             </div>
           )}
 
-          {/* SOH Degradation, Operational Ranges, and Replacement Summary */}
           <div style={{ marginBottom: "24px" }} className="grid-auto-fit">
             {results.computedVehicles.map((v, idx) => {
               if (v.type !== "electric") return null;
@@ -1615,7 +1716,6 @@ export default function ComprehensiveTCOCalculator() {
             })}
           </div>
 
-          {/* Sized Station & Chargers Siting Table */}
           {results.computedVehicles.some(v => v.type === "electric") && (
             <div style={{ background: "var(--panel-alt)", padding: "18px", borderRadius: "10px", marginBottom: "24px", border: "1px solid var(--border)" }}>
               <div className="kpi-label" style={{ color: "var(--bev)" }}>
@@ -1654,7 +1754,6 @@ export default function ComprehensiveTCOCalculator() {
           )}
 
 
-          {/* NPV Cost Trend Graph */}
           <div style={{ marginTop: "24px" }}>
             <h3 style={{ fontSize: "15px", textTransform: "uppercase", marginBottom: "12px", borderBottom: "1px solid var(--border)", paddingBottom: "6px", color: "var(--text)" }}>
               NPV Cost Accrual Over Project Horizon ({results.years} Years)
@@ -1691,7 +1790,6 @@ export default function ComprehensiveTCOCalculator() {
             </ResponsiveContainer>
           </div>
 
-          {/* Cost Category Breakdown */}
           <div style={{ marginTop: "32px" }}>
             <h3 style={{ fontSize: "15px", textTransform: "uppercase", marginBottom: "12px", borderBottom: "1px solid var(--border)", paddingBottom: "6px", color: "var(--text)" }}>
               NPV Cost Category breakdown comparison
@@ -1731,7 +1829,6 @@ export default function ComprehensiveTCOCalculator() {
             </ResponsiveContainer>
           </div>
 
-          {/* Fleet Comparison Snapshot */}
           {results.computedVehicles.length > 1 && (
             <div style={{ marginTop: "32px" }}>
               <h3 style={{ fontSize: "15px", textTransform: "uppercase", marginBottom: "6px", borderBottom: "1px solid var(--border)", paddingBottom: "6px", color: "var(--text)" }}>
