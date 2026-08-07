@@ -3,7 +3,7 @@ import {
   Truck, Zap, Fuel, BatteryCharging, TrendingUp,
   Package, Info, RotateCcw, PlugZap,
   Plus, Trash2, MapPin, Settings, Sun, Moon, AlertTriangle, CheckCircle2,
-  Sparkles, GitBranch, Route
+  Sparkles, GitBranch, Route, DollarSign
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -213,8 +213,8 @@ const INITIAL_VEHICLES = [
     chargerCost: 1500000,
     chargerMaintenance: 50000,
     infrastructureTaxCredit: 0,
-    chargeSpeedKW: 150, 
-    chargingTimeMarginPct: 10, 
+    chargeSpeedKW: 200, 
+    chargingTimeMarginPct: 200, 
     electricityRate: 5,
     depotLandLeaseMonthly: 120000,
     depotDemandChargesMonthly: 80000,
@@ -431,13 +431,14 @@ function computeVehicleMetrics(v, routeSegments, cfg) {
   const totalUpfrontGSTPrice = v.purchasePrice * (1 + v.gstRate / 100);
   let loanUpfrontDownpayment = totalUpfrontGSTPrice;
   let loanAnnualEMI = 0;
+  let loanPrincipalDebt = 0;
 
   if (v.financing === "emi" && v.loanTenure > 0) {
     loanUpfrontDownpayment = totalUpfrontGSTPrice * (v.downPaymentPct / 100);
-    const principalDebt = Math.max(0, totalUpfrontGSTPrice - loanUpfrontDownpayment);
+    loanPrincipalDebt = Math.max(0, totalUpfrontGSTPrice - loanUpfrontDownpayment);
     const monthlyRate = v.interestRate / 1200;
     const totalMonths = v.loanTenure * 12;
-    loanAnnualEMI = (monthlyRate > 0 ? (principalDebt * monthlyRate * Math.pow(1 + monthlyRate, totalMonths)) / (Math.pow(1 + monthlyRate, totalMonths) - 1) : principalDebt / totalMonths) * 12;
+    loanAnnualEMI = (monthlyRate > 0 ? (loanPrincipalDebt * monthlyRate * Math.pow(1 + monthlyRate, totalMonths)) / (Math.pow(1 + monthlyRate, totalMonths) - 1) : loanPrincipalDebt / totalMonths) * 12;
   }
 
   let npvTCOSum = (loanUpfrontDownpayment * fleetSizeRequired) + capitalSetupInfra;
@@ -607,7 +608,12 @@ function computeVehicleMetrics(v, routeSegments, cfg) {
     maxTheoreticalRange,
     operationalRangeAtStart,
     operationalRangeAtSOHLimit,
-    replacementsPerVehicle: batteryReplacementLog.length
+    replacementsPerVehicle: batteryReplacementLog.length,
+    totalUpfrontGSTPrice,
+    loanUpfrontDownpayment,
+    loanPrincipalDebt,
+    loanAnnualEMI,
+    loanMonthlyEMI: loanAnnualEMI / 12
   };
 }
 
@@ -932,6 +938,7 @@ export default function ComprehensiveTCOCalculator() {
         .badge-warn { background: rgba(226, 149, 50, 0.1); color: var(--diesel); border: 1px solid rgba(226, 149, 50, 0.2); }
         .badge-info { background: rgba(33, 196, 175, 0.1); color: var(--bev); border: 1px solid rgba(33, 196, 175, 0.2); }
         .optimizer-box { background: var(--panel-alt); border: 1px dashed var(--bev); border-radius: 10px; padding: 14px; margin-top: 12px; }
+        .emi-widget { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-top: 12px; }
         .optimizer-result { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-top: 10px; font-size: 12px; }
         .mini-btn { display: inline-flex; align-items: center; gap: 6px; background: var(--bev); color: #0c0e0f; border: none; padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; }
         .mini-btn:hover { opacity: 0.9; }
@@ -1317,6 +1324,45 @@ export default function ComprehensiveTCOCalculator() {
                     <Field label="Equity Contribution" value={v.downPaymentPct} onChange={(val) => updateVehicleProp(v.id, "downPaymentPct", val)} suffix="%" step={5} />
                     <Field label="Annual Interest Rate" value={v.interestRate} onChange={(val) => updateVehicleProp(v.id, "interestRate", val)} suffix="%" step={0.25} />
                     <Field label="Loan Duration Window" value={v.loanTenure} onChange={(val) => updateVehicleProp(v.id, "loanTenure", val)} suffix="Years" step={1} />
+
+                    {currentComputed && (
+                      <div className="emi-widget">
+                        <div className="kpi-label" style={{ color: v.type === "electric" ? "var(--bev)" : "var(--diesel)" }}>
+                          <DollarSign size={13} style={{ marginRight: 4 }} /> EMI Snapshot (per vehicle)
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "6px" }}>
+                          <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>Monthly EMI</span>
+                          <strong className="num" style={{ fontSize: "17px" }}>{inr(currentComputed.loanMonthlyEMI)}</strong>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "10px", paddingTop: "8px", borderTop: "1px dashed var(--border)" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}>
+                            <span style={{ fontSize: "11.5px", color: "var(--text-dim)" }}>On-road price (incl. GST)</span>
+                            <span className="num" style={{ fontSize: "11.5px" }}>{inr(currentComputed.totalUpfrontGSTPrice)}</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}>
+                            <span style={{ fontSize: "11.5px", color: "var(--text-dim)" }}>Down payment</span>
+                            <span className="num" style={{ fontSize: "11.5px" }}>{inr(currentComputed.loanUpfrontDownpayment)}</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}>
+                            <span style={{ fontSize: "11.5px", color: "var(--text-dim)" }}>Loan principal</span>
+                            <span className="num" style={{ fontSize: "11.5px" }}>{inr(currentComputed.loanPrincipalDebt)}</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}>
+                            <span style={{ fontSize: "11.5px", color: "var(--text-dim)" }}>Total interest over {v.loanTenure}y</span>
+                            <span className="num" style={{ fontSize: "11.5px", color: "var(--bad)" }}>{inr(Math.max(0, currentComputed.loanAnnualEMI * v.loanTenure - currentComputed.loanPrincipalDebt))}</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}>
+                            <span style={{ fontSize: "11.5px", color: "var(--text-dim)" }}>Total repayment (principal + interest)</span>
+                            <strong className="num" style={{ fontSize: "11.5px" }}>{inr(currentComputed.loanAnnualEMI * v.loanTenure)}</strong>
+                          </div>
+                        </div>
+                        {currentComputed.fleetSizeRequired > 1 && (
+                          <div style={{ fontSize: "10.5px", color: "var(--text-dim)", marginTop: "8px", paddingTop: "8px", borderTop: "1px dashed var(--border)" }}>
+                            Across the sized fleet of <strong className="num">{currentComputed.fleetSizeRequired}</strong> units, that's <strong className="num">{inrCompact(currentComputed.loanMonthlyEMI * currentComputed.fleetSizeRequired)}</strong>/month total.
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </>
                 )}
               </div>
