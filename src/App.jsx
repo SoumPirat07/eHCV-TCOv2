@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer, BarChart, Bar
+  ResponsiveContainer, BarChart, Bar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar
 } from "recharts";
 
 // 1. Core Lookup Matrix for DIESEL Duty Cycle Efficiency
@@ -135,6 +135,17 @@ const DEFAULT_ROUTE = [
 ];
 
 const VEHICLE_COLORS = ["#21bfa9", "#e29532", "#b16af0", "#38bdf8", "#ec4899", "#10b981"];
+// Colors are assigned by TYPE first (teal family = electric, orange family = diesel,
+// matching the buttons/badges/cards throughout the app), then shaded by position so
+// multiple vehicles of the same type stay distinguishable without breaking the
+// type-color convention.
+const EV_SHADES = ["#21bfa9", "#38bdf8", "#10b981", "#5eead4"];
+const DIESEL_SHADES = ["#e29532", "#f59e0b", "#ec4899", "#fb923c"];
+function colorForVehicle(v, allVehicles) {
+  const sameTypeIdx = Math.max(0, allVehicles.filter((x) => x.type === v.type).findIndex((x) => x.id === v.id));
+  const palette = v.type === "electric" ? EV_SHADES : DIESEL_SHADES;
+  return palette[sameTypeIdx % palette.length];
+}
 
 const INITIAL_VEHICLES = [
   {
@@ -202,8 +213,8 @@ const INITIAL_VEHICLES = [
     chargerCost: 1500000,
     chargerMaintenance: 50000,
     infrastructureTaxCredit: 0,
-    chargeSpeedKW: 200, 
-    chargingTimeMarginPct: 200, 
+    chargeSpeedKW: 150, 
+    chargingTimeMarginPct: 10, 
     electricityRate: 5,
     depotLandLeaseMonthly: 120000,
     depotDemandChargesMonthly: 80000,
@@ -234,10 +245,13 @@ function computeVehicleMetrics(v, routeSegments, cfg) {
 
   const segmentOverloads = [];
   const segmentEconomies = [];
+  const segmentDrivingHours = [];
 
   routeSegments.forEach((seg, idx) => {
     totalTripDistance += seg.distance;
-    totalTripDrivingHrs += seg.distance / Math.max(1, seg.avgSpeed);
+    const segHrs = seg.distance / Math.max(1, seg.avgSpeed);
+    totalTripDrivingHrs += segHrs;
+    segmentDrivingHours.push(segHrs);
     if (seg.payload > tripMaxPayload) tripMaxPayload = seg.payload;
     if (seg.payload > payloadCap) segmentOverloads.push({ segmentIdx: idx + 1, payload: seg.payload, cap: payloadCap });
 
@@ -429,7 +443,7 @@ function computeVehicleMetrics(v, routeSegments, cfg) {
   let npvTCOSum = (loanUpfrontDownpayment * fleetSizeRequired) + capitalSetupInfra;
   let cumCostTimeline = [npvTCOSum];
 
-  const breakdown = { upfront: npvTCOSum, fuelOrEnergy: 0, emi: 0, maintenance: 0, wages: 0, tolls: 0, tyres: 0, batteryReplacements: 0, infraMaintenance: 0, misc: 0, residuals: 0 };
+  const breakdown = { upfront: npvTCOSum, fuelOrEnergy: 0, emi: 0, maintenance: 0, insurance: 0, wages: 0, tolls: 0, tyres: 0, batteryReplacements: 0, infraMaintenance: 0, misc: 0, residuals: 0 };
 
   let currentSOH = 100;
   let mileageSinceLastReplacement = 0;
@@ -498,7 +512,8 @@ function computeVehicleMetrics(v, routeSegments, cfg) {
 
     breakdown.fuelOrEnergy += yearFuelOrEnergy * df;
     breakdown.emi += yearEMI * df;
-    breakdown.maintenance += (yearMaint + yearIns) * df;
+    breakdown.maintenance += yearMaint * df;
+    breakdown.insurance += yearIns * df;
     breakdown.wages += yearWages * df;
     breakdown.tolls += yearTolls * df;
     breakdown.tyres += yearTyres * df;
@@ -519,25 +534,44 @@ function computeVehicleMetrics(v, routeSegments, cfg) {
   const operationalRangeAtStart = v.type === "electric" ? v.batteryCapacity * ((100 - v.safeSoCThreshold) / 100) * avgRouteEconomy : 0;
   const operationalRangeAtSOHLimit = v.type === "electric" ? operationalRangeAtStart * (resolvedSOHReplacementLimit / 100) : 0;
 
-  // Per-segment operating cost / tonne-km (fuel-or-energy + maintenance + tyres,
-  // i.e. the costs that actually scale with a specific leg of the route).
-  // Capital, financing, insurance, wages and infra costs are fleet-level and
-  // are NOT attributable to one segment, so they're excluded here and shown
-  // separately in the lifetime total (v.costPerTonneKm above).
+  // Per-segment cost. Two figures per segment:
+  //  - operatingCostPerKm: fuel-or-energy + maintenance + tyres — the part that
+  //    actually scales with THIS leg's distance/economy.
+  //  - fullCostPerKm: operating cost PLUS a time-allocated share of every fixed/
+  //    fleet-level cost (capital, EMI, insurance, wages, tolls, infra upkeep,
+  //    battery swaps, residuals). Fixed costs are amortized per trip, then split
+  //    across segments by each segment's share of one loop's driving time — a
+  //    segment that ties up the truck (and driver, and capital) for longer
+  //    carries a proportionally larger share, regardless of how cheap its fuel
+  //    is. Summed across a full loop and multiplied by lifetime trips, this
+  //    reconciles closely (not exactly, due to NPV discounting) with the
+  //    lifecycle total shown as "Total" in the table.
   const tyreCostPerKmFlat = (v.tyresFront * v.tyreCostFront / Math.max(1, v.tyreLifeFront)) +
     (v.tyresRear * v.tyreCostRear / Math.max(1, v.tyreLifeRear)) +
     (v.tyresTrailer * v.tyreCostTrailer / Math.max(1, v.tyreLifeTrailer));
+
+  const fixedCostBucketNPV = breakdown.upfront + breakdown.emi + breakdown.insurance + breakdown.wages +
+    breakdown.tolls + breakdown.infraMaintenance + breakdown.misc + breakdown.batteryReplacements + breakdown.residuals;
+  const totalTripsOverLife = Math.max(1, totalTripsAcrossFleetYear * years);
+  const fixedCostPerTrip = fixedCostBucketNPV / totalTripsOverLife;
+  const safeTotalTripDrivingHrs = Math.max(0.01, totalTripDrivingHrs);
 
   const segmentCostPerTonneKm = routeSegments.map((seg, idx) => {
     const segEconomy = Math.max(0.01, segmentEconomies[idx]);
     const fuelPricePerUnit = v.type === "diesel" ? v.fuelOrElectricPrice : v.electricityRate;
     const fuelCostPerKm = fuelPricePerUnit / segEconomy;
     const operatingCostPerKm = fuelCostPerKm + v.maintCostPerKm + tyreCostPerKmFlat;
+
+    const timeShare = segmentDrivingHours[idx] / safeTotalTripDrivingHrs;
+    const allocatedFixedCost = fixedCostPerTrip * timeShare;
+    const fullCostPerKm = operatingCostPerKm + (allocatedFixedCost / Math.max(0.01, seg.distance));
+
     const cappedPayload = Math.min(seg.payload, payloadCap);
-    const costPerTonneKmSeg = cappedPayload > 0 ? operatingCostPerKm / cappedPayload : null;
+    const costPerTonneKmSeg = cappedPayload > 0 ? fullCostPerKm / cappedPayload : null;
+    const operatingCostPerTonneKmSeg = cappedPayload > 0 ? operatingCostPerKm / cappedPayload : null;
     return {
       from: seg.from, to: seg.to, distance: seg.distance, payload: cappedPayload,
-      operatingCostPerKm, costPerTonneKmSeg
+      operatingCostPerKm, fullCostPerKm, costPerTonneKmSeg, operatingCostPerTonneKmSeg
     };
   });
 
@@ -777,7 +811,28 @@ export default function ComprehensiveTCOCalculator() {
       ? computeBreakeven(chartData, firstDiesel.name, firstElectric.name)
       : null;
 
-    return { years, computedVehicles, chartData, cfg, firstDiesel, firstElectric, breakevenYear };
+    // Fleet comparison radar: normalize each vehicle against the best performer
+    // on each metric (best = 100, others scaled proportionally). "Inverse" means
+    // lower raw value is better (cost, time), so it's scored as best/value*100.
+    const radarDims = [
+      { key: "npvTCOSum", label: "Lower TCO", inverse: true },
+      { key: "costPerTonneKm", label: "Lower ₹/Tonne-km", inverse: true },
+      { key: "utilizationPctComputed", label: "Utilization", inverse: false, cap: 100 },
+      { key: "turnaroundCycleHrs", label: "Faster Turnaround", inverse: true },
+      { key: "fleetSizeRequired", label: "Smaller Fleet", inverse: true },
+    ];
+    const radarData = computedVehicles.length > 0 ? radarDims.map((dim) => {
+      const row = { metric: dim.label };
+      if (dim.inverse) {
+        const best = Math.min(...computedVehicles.map((v) => Math.max(0.0001, v[dim.key])));
+        computedVehicles.forEach((v) => { row[v.name] = Math.round((best / Math.max(0.0001, v[dim.key])) * 100); });
+      } else {
+        computedVehicles.forEach((v) => { row[v.name] = Math.round(Math.min(dim.cap || 100, v[dim.key])); });
+      }
+      return row;
+    }) : [];
+
+    return { years, computedVehicles, chartData, cfg, firstDiesel, firstElectric, breakevenYear, radarData };
   }, [ vehicles, routeSegments, monthlyCargoVolume, workingDaysPerMonth, dailyOperatingLimitHrs, loadingUnloadingTimePerTrip, analysisPeriod, discountRate, escGeneral, escFuel, escElectricity, escWages, escInfrastructure ]);
 
   const handleRunOptimizer = (vehicleId) => {
@@ -793,7 +848,7 @@ export default function ComprehensiveTCOCalculator() {
 
   const handleApplyOptimalNetwork = (vehicleId) => {
     const best = optimizerResults[vehicleId];
-    if (!best) return;
+    if (!best || best.depotFlags.length !== routeSegments.length) return; // stale result, re-run first
     setRouteSegments(routeSegments.map((s, i) => ({ ...s, hasDepotAtTo: best.depotFlags[i] })));
   };
 
@@ -810,6 +865,13 @@ export default function ComprehensiveTCOCalculator() {
           transition: all 0.2s ease-in-out; -webkit-font-smoothing: antialiased;
         }
         .wrap * { box-sizing: border-box; }
+        /* Defensive reset: some host pages ship global CSS (e.g. a default Vite
+           index.css) that sets an explicit text color on body/button/a with equal
+           or higher specificity than our theme rules, which can leave text stuck
+           white-on-white in light mode. This low-priority rule forces every
+           descendant back to the theme's text color unless something more specific
+           below (inline styles, badges, KPI value colors, etc.) overrides it. */
+        .wrap, .wrap * { color: var(--text); }
         .wrap.dark-theme { --bg: #090b0c; --panel: #131719; --panel-alt: #1a2022; --border: #262f32; --text: #f3f4f6; --text-dim: #9ca3af; --bev: #21bfa9; --diesel: #e29532; --good: #10b981; --bad: #ef4444; --input-bg: #0d0f10; }
         .wrap.light-theme { --bg: #f9fafb; --panel: #ffffff; --panel-alt: #f3f4f6; --border: #e5e7eb; --text: #111827; --text-dim: #6b7280; --bev: #129382; --diesel: #be7a21; --good: #059669; --bad: #dc2626; --input-bg: #f9fafb; }
         h1, h2, h3, .display { font-family: 'Barlow Condensed', sans-serif; letter-spacing: 0.02em; }
@@ -823,6 +885,7 @@ export default function ComprehensiveTCOCalculator() {
         .panel h2 { font-size: 18px; margin: 0 0 20px; text-transform: uppercase; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
         .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
         .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+        .grid-auto-fit { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; }
         @media(max-width: 900px) { .grid-3, .grid-2 { grid-template-columns: 1fr; } }
         .field { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
         .field-label { font-size: 13px; color: var(--text-dim); flex: 1; }
@@ -1206,12 +1269,34 @@ export default function ComprehensiveTCOCalculator() {
                               {inrCompact(Math.max(0, currentComputed.npvTCOSum - optResult.npvTCOSum))}
                             </strong>
                           </div>
-                          {currentComputed.npvTCOSum - optResult.npvTCOSum > 1 ? (
+
+                          {optResult.depotFlags.length === routeSegments.length && (() => {
+                            const changes = routeSegments
+                              .map((s, i) => ({ seg: s, was: s.hasDepotAtTo, will: optResult.depotFlags[i] }))
+                              .filter((c) => c.was !== c.will);
+                            if (changes.length === 0) return null;
+                            return (
+                              <div style={{ marginBottom: "10px", borderTop: "1px dashed var(--border)", paddingTop: "6px" }}>
+                                <span style={{ color: "var(--text-dim)", display: "block", marginBottom: "4px" }}>What changes:</span>
+                                <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                                  {changes.map((c, ci) => (
+                                    <span key={ci} style={{ color: c.will ? "var(--good)" : "var(--bad)" }}>
+                                      {c.will ? "+ Add" : "− Remove"} depot at {c.seg.from} → {c.seg.to}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })()}
+
+                          {optResult.depotFlags.length !== routeSegments.length ? (
+                            <span style={{ fontSize: "11.5px", color: "var(--diesel)" }}>Route has changed since this ran — re-run to refresh.</span>
+                          ) : currentComputed.npvTCOSum - optResult.npvTCOSum > 1 ? (
                             <button className="mini-btn" onClick={() => handleApplyOptimalNetwork(v.id)}>
                               <CheckCircle2 size={13} /> Apply This Network
                             </button>
                           ) : (
-                            <span style={{ fontSize: "11.5px", color: "var(--text-dim)" }}>Current depot placement is already optimal.</span>
+                            <span style={{ fontSize: "11.5px", color: "var(--text-dim)" }}>Current depot placement is already optimal — nothing to change.</span>
                           )}
                         </div>
                       )}
@@ -1264,18 +1349,11 @@ export default function ComprehensiveTCOCalculator() {
         {results.firstDiesel && results.firstElectric && (
           <div className="breakeven-strip">
             <TrendingUp size={22} style={{ flexShrink: 0, color: "var(--bev)" }} />
-            <div>
-              <strong style={{ display: "block", marginBottom: "2px", fontSize: "14px" }}>
-                {results.breakevenYear !== null
-                  ? `Breakeven: EV cheaper than Diesel from Year ${results.breakevenYear.toFixed(1)}`
-                  : "No breakeven within the analysis horizon"}
-              </strong>
-              <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>
-                {results.breakevenYear !== null
-                  ? `Comparing ${results.firstElectric.name} vs ${results.firstDiesel.name} cumulative TCO. Before this point Diesel is cheaper; after it, EV pulls ahead.`
-                  : `${results.firstElectric.name} does not cross below ${results.firstDiesel.name} cumulative TCO within ${results.years} years — extend the analysis window or adjust cost assumptions to see if/when it would.`}
-              </span>
-            </div>
+            <strong style={{ fontSize: "14px" }}>
+              {results.breakevenYear !== null
+                ? `Breakeven: EV cheaper than Diesel from Year ${results.breakevenYear.toFixed(1)}`
+                : "No breakeven within the analysis horizon"}
+            </strong>
           </div>
         )}
 
@@ -1286,9 +1364,9 @@ export default function ComprehensiveTCOCalculator() {
           {/* Sizing KPIs */}
           <div className="kpi-grid">
             {results.computedVehicles.map((v, idx) => (
-              <div key={v.id} className="kpi-card" style={{ borderTop: `4px solid ${VEHICLE_COLORS[idx % VEHICLE_COLORS.length]}` }}>
+              <div key={v.id} className="kpi-card" style={{ borderTop: `4px solid ${colorForVehicle(v, results.computedVehicles)}` }}>
                 <div className="kpi-label">{v.name} ({v.fleetSizeRequired} Units Sized)</div>
-                <div className="kpi-val num" style={{ color: VEHICLE_COLORS[idx % VEHICLE_COLORS.length] }}>
+                <div className="kpi-val num" style={{ color: colorForVehicle(v, results.computedVehicles) }}>
                   {inrCompact(v.npvTCOSum)}
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px solid var(--border)", paddingBottom: "6px", marginBottom: "8px" }}>
@@ -1315,6 +1393,60 @@ export default function ComprehensiveTCOCalculator() {
                 </div>
               </div>
             ))}
+          </div>
+
+          {/* Per-segment Cost/Tonne-km - sits right below the KPI totals since it's
+              the breakdown of the "Cost/Tonne-km" figure shown up there. */}
+          <div style={{ marginTop: "8px", marginBottom: "24px" }}>
+            <h3 style={{ fontSize: "15px", textTransform: "uppercase", marginBottom: "6px", borderBottom: "1px solid var(--border)", paddingBottom: "6px", color: "var(--text)" }}>
+              <Route size={15} style={{ display: "inline", verticalAlign: "-2px", marginRight: 6, color: "var(--bev)" }} />
+              Cost per Tonne-km by Route Segment
+            </h3>
+            <div style={{ fontSize: "11.5px", color: "var(--text-dim)", marginBottom: "12px" }}>
+              Bold figure per segment is fully-loaded: fuel/energy + maintenance + tyres for that leg, plus a time-share of every fixed cost (capital, financing, insurance, wages, tolls, infra, battery swaps). Smaller line below is operating-cost-only, for reference. Empty-payload legs (e.g. return trips) show the cost per km run instead, since tonne-km is undefined with no cargo.
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table className="seg-cost-table">
+                <thead>
+                  <tr>
+                    <th>Segment / Vehicle</th>
+                    {results.computedVehicles.map((v) => (
+                      <th key={v.id} style={{ color: colorForVehicle(v, results.computedVehicles) }}>{v.name}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr style={{ background: "var(--panel-alt)" }}>
+                    <td><strong>Total (lifecycle NPV)</strong></td>
+                    {results.computedVehicles.map((v) => (
+                      <td key={v.id} className="num" style={{ fontWeight: 700, color: colorForVehicle(v, results.computedVehicles) }}>₹{v.costPerTonneKm.toFixed(3)}</td>
+                    ))}
+                  </tr>
+                  {routeSegments.map((seg, segIdx) => (
+                    <tr key={seg.id}>
+                      <td>{seg.from} → {seg.to} <span style={{ color: "var(--text-dim)" }}>({seg.distance} km)</span></td>
+                      {results.computedVehicles.map((v) => {
+                        const segData = v.segmentCostPerTonneKm[segIdx];
+                        if (!segData) return <td key={v.id} className="num">—</td>;
+                        if (segData.costPerTonneKmSeg !== null) {
+                          return (
+                            <td key={v.id} className="num">
+                              <div>₹{segData.costPerTonneKmSeg.toFixed(3)}</div>
+                              <div style={{ fontSize: "10.5px", color: "var(--text-dim)", fontWeight: 400 }}>op-only ₹{segData.operatingCostPerTonneKmSeg.toFixed(3)}</div>
+                            </td>
+                          );
+                        }
+                        return (
+                          <td key={v.id} className="num" style={{ color: "var(--text-dim)" }}>
+                            — <span style={{ fontSize: "10.5px" }}>(₹{segData.fullCostPerKm.toFixed(2)}/km run, no cargo)</span>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           {/* Sequential SoC Trace details */}
@@ -1358,11 +1490,11 @@ export default function ComprehensiveTCOCalculator() {
           )}
 
           {/* SOH Degradation, Operational Ranges, and Replacement Summary */}
-          <div style={{ marginBottom: "24px" }} className="grid-3">
+          <div style={{ marginBottom: "24px" }} className="grid-auto-fit">
             {results.computedVehicles.map((v, idx) => {
               if (v.type !== "electric") return null;
               return (
-                <div key={v.id} className="kpi-card" style={{ background: "var(--panel)", borderLeft: `4px solid ${VEHICLE_COLORS[idx % VEHICLE_COLORS.length]}` }}>
+                <div key={v.id} className="kpi-card" style={{ background: "var(--panel)", borderLeft: `4px solid ${colorForVehicle(v, results.computedVehicles)}` }}>
                   <div className="kpi-label">{v.name} Battery Sizing & Lifecycle</div>
 
                   <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "12px" }}>
@@ -1418,6 +1550,20 @@ export default function ComprehensiveTCOCalculator() {
                       No battery pack replacements occurred during the {results.years}-year project lifecycle.
                     </div>
                   )}
+
+                  {v.sohTimeline.length > 1 && (
+                    <div style={{ marginTop: "14px" }}>
+                      <div style={{ fontSize: "10.5px", color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "4px" }}>SOH over analysis window</div>
+                      <ResponsiveContainer width="100%" height={90}>
+                        <LineChart data={v.sohTimeline} margin={{ top: 4, right: 8, left: -24, bottom: 0 }}>
+                          <XAxis dataKey="year" tick={{ fontSize: 9, fill: "var(--text-dim)" }} stroke="var(--border)" />
+                          <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: "var(--text-dim)" }} stroke="var(--border)" width={30} />
+                          <Tooltip contentStyle={{ background: "var(--panel)", border: "1px solid var(--border)", color: "var(--text)", fontSize: "11px" }} formatter={(val) => `${val}%`} labelFormatter={(y) => `Year ${y}`} />
+                          <Line type="stepAfter" dataKey="soh" stroke={colorForVehicle(v, results.computedVehicles)} strokeWidth={2} dot={false} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1461,49 +1607,6 @@ export default function ComprehensiveTCOCalculator() {
             </div>
           )}
 
-          {/* Per-segment Cost/Tonne-km */}
-          <div style={{ marginTop: "8px", marginBottom: "24px" }}>
-            <h3 style={{ fontSize: "15px", textTransform: "uppercase", marginBottom: "6px", borderBottom: "1px solid var(--border)", paddingBottom: "6px", color: "var(--text)" }}>
-              <Route size={15} style={{ display: "inline", verticalAlign: "-2px", marginRight: 6, color: "var(--bev)" }} />
-              Cost per Tonne-km by Route Segment
-            </h3>
-            <div style={{ fontSize: "11.5px", color: "var(--text-dim)", marginBottom: "12px" }}>
-              Total row is the full lifecycle NPV figure (includes capital, financing, wages, infra). Segment rows below are operating-cost-only (fuel/energy + maintenance + tyres) since capital and overheads aren't attributable to a single leg. Empty-payload legs (e.g. return trips) show as "—".
-            </div>
-            <div style={{ overflowX: "auto" }}>
-              <table className="seg-cost-table">
-                <thead>
-                  <tr>
-                    <th>Segment / Vehicle</th>
-                    {results.computedVehicles.map((v, idx) => (
-                      <th key={v.id} style={{ color: VEHICLE_COLORS[idx % VEHICLE_COLORS.length] }}>{v.name}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr style={{ background: "var(--panel-alt)" }}>
-                    <td><strong>Total (lifecycle NPV)</strong></td>
-                    {results.computedVehicles.map((v, idx) => (
-                      <td key={v.id} className="num" style={{ fontWeight: 700, color: VEHICLE_COLORS[idx % VEHICLE_COLORS.length] }}>₹{v.costPerTonneKm.toFixed(3)}</td>
-                    ))}
-                  </tr>
-                  {routeSegments.map((seg, segIdx) => (
-                    <tr key={seg.id}>
-                      <td>{seg.from} → {seg.to} <span style={{ color: "var(--text-dim)" }}>({seg.distance} km)</span></td>
-                      {results.computedVehicles.map((v) => {
-                        const segData = v.segmentCostPerTonneKm[segIdx];
-                        return (
-                          <td key={v.id} className="num">
-                            {segData && segData.costPerTonneKmSeg !== null ? `₹${segData.costPerTonneKmSeg.toFixed(3)}` : "—"}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
 
           {/* NPV Cost Trend Graph */}
           <div style={{ marginTop: "24px" }}>
@@ -1513,7 +1616,7 @@ export default function ComprehensiveTCOCalculator() {
             <div className="legend-row">
               {results.computedVehicles.map((v, idx) => (
                 <span key={v.id}>
-                  <span className="legend-dot" style={{ background: VEHICLE_COLORS[idx % VEHICLE_COLORS.length] }} />
+                  <span className="legend-dot" style={{ background: colorForVehicle(v, results.computedVehicles) }} />
                   {v.name}
                 </span>
               ))}
@@ -1536,7 +1639,7 @@ export default function ComprehensiveTCOCalculator() {
                 />
                 <Tooltip contentStyle={{ background: "var(--panel)", border: "1px solid var(--border)", color: "var(--text)" }} formatter={(v) => inr(v)} />
                 {results.computedVehicles.map((v, idx) => (
-                  <Line key={v.id} type="monotone" dataKey={v.name} stroke={VEHICLE_COLORS[idx % VEHICLE_COLORS.length]} strokeWidth={2.5} dot={{ r: 3 }} />
+                  <Line key={v.id} type="monotone" dataKey={v.name} stroke={colorForVehicle(v, results.computedVehicles)} strokeWidth={2.5} dot={{ r: 3 }} />
                 ))}
               </LineChart>
             </ResponsiveContainer>
@@ -1553,7 +1656,7 @@ export default function ComprehensiveTCOCalculator() {
                   { category: "Capital & Infra", ...results.computedVehicles.reduce((acc, v) => ({ ...acc, [v.name]: v.breakdown.upfront }), {}) },
                   { category: "Fuel/Energy", ...results.computedVehicles.reduce((acc, v) => ({ ...acc, [v.name]: v.breakdown.fuelOrEnergy }), {}) },
                   { category: "EMI/Debt", ...results.computedVehicles.reduce((acc, v) => ({ ...acc, [v.name]: v.breakdown.emi }), {}) },
-                  { category: "Maint & Ins", ...results.computedVehicles.reduce((acc, v) => ({ ...acc, [v.name]: v.breakdown.maintenance }), {}) },
+                  { category: "Maint & Ins", ...results.computedVehicles.reduce((acc, v) => ({ ...acc, [v.name]: v.breakdown.maintenance + v.breakdown.insurance }), {}) },
                   { category: "Wages", ...results.computedVehicles.reduce((acc, v) => ({ ...acc, [v.name]: v.breakdown.wages }), {}) },
                   { category: "Misc", ...results.computedVehicles.reduce((acc, v) => ({ ...acc, [v.name]: v.breakdown.misc }), {}) },
                   { category: "Tolls & Tyres", ...results.computedVehicles.reduce((acc, v) => ({ ...acc, [v.name]: v.breakdown.tolls + v.breakdown.tyres }), {}) },
@@ -1576,11 +1679,35 @@ export default function ComprehensiveTCOCalculator() {
                 <Tooltip contentStyle={{ background: "var(--panel)", border: "1px solid var(--border)", color: "var(--text)" }} formatter={(v) => inr(v)} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 {results.computedVehicles.map((v, idx) => (
-                  <Bar key={v.id} dataKey={v.name} fill={VEHICLE_COLORS[idx % VEHICLE_COLORS.length]} />
+                  <Bar key={v.id} dataKey={v.name} fill={colorForVehicle(v, results.computedVehicles)} />
                 ))}
               </BarChart>
             </ResponsiveContainer>
           </div>
+
+          {/* Fleet Comparison Snapshot */}
+          {results.computedVehicles.length > 1 && (
+            <div style={{ marginTop: "32px" }}>
+              <h3 style={{ fontSize: "15px", textTransform: "uppercase", marginBottom: "6px", borderBottom: "1px solid var(--border)", paddingBottom: "6px", color: "var(--text)" }}>
+                Fleet Comparison Snapshot
+              </h3>
+              <div style={{ fontSize: "11.5px", color: "var(--text-dim)", marginBottom: "8px" }}>
+                Each axis is scored relative to the best vehicle on that metric (100 = best in this fleet, not an absolute scale) — useful for seeing each vehicle's relative strengths and weaknesses at a glance.
+              </div>
+              <ResponsiveContainer width="100%" height={360}>
+                <RadarChart data={results.radarData} outerRadius="75%">
+                  <PolarGrid stroke="var(--border)" />
+                  <PolarAngleAxis dataKey="metric" tick={{ fontSize: 11, fill: "var(--text-dim)" }} />
+                  <PolarRadiusAxis angle={30} domain={[0, 100]} tick={{ fontSize: 9, fill: "var(--text-dim)" }} stroke="var(--border)" />
+                  <Tooltip contentStyle={{ background: "var(--panel)", border: "1px solid var(--border)", color: "var(--text)" }} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  {results.computedVehicles.map((v) => (
+                    <Radar key={v.id} name={v.name} dataKey={v.name} stroke={colorForVehicle(v, results.computedVehicles)} fill={colorForVehicle(v, results.computedVehicles)} fillOpacity={0.15} strokeWidth={2} />
+                  ))}
+                </RadarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
 
         </div>
       </div>
@@ -1630,4 +1757,4 @@ function inrCompact(value) {
   if (abs >= 1e5) return `${sign}₹${(abs / 1e5).toFixed(2)} L`;
   if (abs >= 1e3) return `${sign}₹${(abs / 1e3).toFixed(1)} K`;
   return `${sign}₹${abs.toFixed(0)}`;
-} 
+}
